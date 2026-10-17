@@ -31,6 +31,7 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
         serviceCollection.AddSingleton(sp => new FileAuditLog(DataDirectory(sp.GetRequiredService<IApplicationPaths>()), sp.GetRequiredService<IClock>()));
         serviceCollection.AddSingleton<JellyfinUserDirectory>();
         serviceCollection.AddSingleton<JellyfinMediaGateway>();
+        serviceCollection.AddSingleton<DriveService>();
         serviceCollection.AddSingleton<LibraryCatalog>();
         serviceCollection.AddSingleton(sp => new ExternalServiceFactory(sp.GetRequiredService<System.Net.Http.IHttpClientFactory>(), CurrentConfig));
         serviceCollection.AddSingleton(sp => new WebhookNotifier(
@@ -38,6 +39,8 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
             CurrentConfig,
             sp.GetRequiredService<ILoggerFactory>().CreateLogger("MediaVote.Webhook")));
         serviceCollection.AddSingleton<ArrLibraryCache>();
+        serviceCollection.AddSingleton<ITemplateStore>(sp => new JsonTemplateStore(DataDirectory(sp.GetRequiredService<IApplicationPaths>())));
+        serviceCollection.AddSingleton<INotifier>(sp => sp.GetRequiredService<WebhookNotifier>());
         serviceCollection.AddSingleton(sp =>
         {
             var factory = sp.GetRequiredService<ExternalServiceFactory>();
@@ -49,7 +52,8 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
                 sp.GetRequiredService<WebhookNotifier>(),
                 sp.GetRequiredService<FileAuditLog>(),
                 sp.GetRequiredService<IClock>(),
-                () => KillSwitch.IsActive);
+                () => KillSwitch.IsActive,
+                sp.GetRequiredService<DriveService>());
         });
         serviceCollection.AddSingleton<WebInjectionService>();
         serviceCollection.AddSingleton<EntryPointRegistrar>();

@@ -17,6 +17,9 @@ public sealed class WinnerSelection
     public int OpenSlots { get; set; }
 
     public bool TieCrossesCutoff => TiedAtCutoff.Count > 0;
+
+    /// <summary>Explanations (tie-break rule used, free-space target reached or not, titles skipped).</summary>
+    public List<string> Notes { get; } = new();
 }
 
 /// <summary>

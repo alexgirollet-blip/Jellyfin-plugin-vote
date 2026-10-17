@@ -227,6 +227,24 @@ public static class VoteRules
             errors.Add($"\"Delete via Sonarr/Radarr\" can remove at most {s.MaxRemovals} title(s) per vote (Settings). Lower the number of winners or raise the maximum.");
         }
 
+        if (s.TargetMode != TargetMode.FixedCount)
+        {
+            if (string.IsNullOrWhiteSpace(s.TargetDrive))
+            {
+                errors.Add("Choose the drive for the free-space target.");
+            }
+
+            if (s.TargetMode == TargetMode.FreeSpace && (s.TargetValue <= 0 || s.TargetValue > 1_000_000))
+            {
+                errors.Add("Enter how many GB should be free (more than 0).");
+            }
+
+            if (s.TargetMode == TargetMode.BelowPercent && (s.TargetValue <= 0 || s.TargetValue >= 100))
+            {
+                errors.Add("Enter the target as a percentage between 1 and 99.");
+            }
+        }
+
         if (s.Scope == ScopeMode.SpecificLibraries && s.LibraryIds.Count == 0)
         {
             errors.Add("Select at least one library.");

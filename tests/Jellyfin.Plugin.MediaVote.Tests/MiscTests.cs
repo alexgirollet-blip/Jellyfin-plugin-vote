@@ -137,7 +137,7 @@ public class FilterAndViewTests
         Build.AddVotes(s, s.Candidates[3].ItemId, 3);
         var page = ViewBuilder.BuildPage(s, Guid.NewGuid(), false, new ItemQuery { Sort = "votes", Descending = true, PageSize = 50 });
         Assert.All(page.Items, i => Assert.Null(i.RemoveVotes));
-        Assert.Equal("Item4", page.Items[0].Name); // name sort descending, not votes
+        Assert.Equal("Item0", page.Items[0].Name); // plain A–Z: a hidden criterion never decides the order
     }
 
     [Fact]

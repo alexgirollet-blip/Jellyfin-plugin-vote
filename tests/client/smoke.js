@@ -18,8 +18,12 @@ const ORIGIN = 'http://jf.test';
 const items = Array.from({ length: 45 }, (_, i) => ({
     id: 'item-' + i, name: 'Title ' + i, year: 2000 + i, kind: i % 2 ? 'Series' : 'Movie', library: 'Lib',
     sizeBytes: (i + 1) * 1e9, dateAddedUtc: '2024-01-01T00:00:00Z', lastPlayedUtc: null, playCount: 0, genres: ['Drama'],
-    imageTag: null, removeVotes: 0, keepVotes: null, removeVoters: [], keepVoters: [], myRemoveVotes: 0, myKeepVotes: 0
+    imageTag: null, removeVotes: 0, keepVotes: null, removeVoters: [], keepVoters: [], myRemoveVotes: 0, myKeepVotes: 0,
+    lastPlayedBy: i === 1 ? 'AlexG' : null, viewerCount: i === 1 ? 3 : 0, neverWatched: i !== 1,
+    drives: i === 1 ? [{ key: '/LM1', name: '8TB 1', bytes: 2e9, known: true, usedBytes: 6.6e12, totalBytes: 7.3e12, usedPercent: 96.2, level: 'Critical' }] : []
 }));
+items[1].lastPlayedUtc = new Date(Date.now() - 95 * 86400000).toISOString();
+items[1].playCount = 12;
 
 function statusFor(state) {
     if (state.hidden || state.disabled) {
@@ -41,7 +45,7 @@ function statusFor(state) {
             allowMultipleVotesPerItem: false, showLiveTallies: true, showVoterNames: true, winnerCount: 2, outcome: 'NotifyOnly',
             hasVoted: state.remaining < 3, closingSoon: false, candidateCount: items.length
         } : null,
-        lastResult: state.active ? null : { id: 's0', title: 'Winter clean', resolvedUtc: '2026-01-01T00:00:00Z', outcome: 'NotifyOnly', turnoutPercent: 80, turnoutMet: true, showBanner: !!state.resultBanner && !state.dismissed, items: [{ id: 'x', name: 'Old Film', kind: 'Movie', score: 3, status: 'flagged' }] }
+        lastResult: state.active ? null : { id: 's0', title: 'Winter clean', resolvedUtc: '2026-01-01T00:00:00Z', outcome: 'NotifyOnly', turnoutPercent: 80, turnoutMet: true, showBanner: !!state.resultBanner && !state.dismissed, totalFreedBytes: 4e10, items: [{ id: 'x', name: 'Old Film', kind: 'Movie', score: 3, status: 'flagged' }, { id: 'y', name: 'Gone Film', kind: 'Movie', score: 5, status: 'removed', sizeBytes: 4e10, requestUrl: 'https://requests.example/movie/603' }] }
     };
 }
 
@@ -85,10 +89,10 @@ function check(cond, msg) {
         await page.route(ORIGIN + '/**', async route => {
             const url = new URL(route.request().url());
             const p = url.pathname;
-            if (p === '/web/index.html') { return route.fulfill({ contentType: 'text/html', body: harness }); }
+            if (p === '/web/index.html') { return route.fulfill({ contentType: 'text/html; charset=utf-8', body: harness }); }
             if (p === '/MediaVote/client.js') {
                 if (state.clientStatus) { return route.fulfill({ status: state.clientStatus, body: 'error' }); }
-                return route.fulfill({ contentType: 'application/javascript', body: fs.readFileSync(path.join(assets, 'client.js'), 'utf8') });
+                return route.fulfill({ contentType: 'application/javascript; charset=utf-8', body: fs.readFileSync(path.join(assets, 'client.js'), 'utf8') });
             }
             if (p === '/MediaVote/client.css') { return route.fulfill({ contentType: 'text/css', body: fs.readFileSync(path.join(assets, 'client.css'), 'utf8') }); }
             if (p === '/MediaVote/Status') {
@@ -98,6 +102,7 @@ function check(cond, msg) {
             }
             if (p === '/MediaVote/Items') {
                 state.itemsCalls = (state.itemsCalls || 0) + 1;
+                (state.itemQueries = state.itemQueries || []).push(url.searchParams);
                 const pageNo = Number(url.searchParams.get('page') || 0);
                 const size = Number(url.searchParams.get('pageSize') || 30);
                 return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ total: items.length, page: pageNo, pageSize: size, genres: ['Drama'], items: items.slice(pageNo * size, pageNo * size + size) }) });
@@ -186,6 +191,28 @@ function check(cond, msg) {
     await page.evaluate(() => { document.getElementById('tabHost').innerHTML = '<div data-mediavote-mount="tab"></div>'; });
     await page.waitForSelector('#tabHost [data-mediavote-mount] .mediavote-card', { timeout: 3000 });
     check(true, 'tab/page mount point renders the same voting UI');
+    // Shared browser cards in the voting view: drive bar, watch details, filters.
+    await page.click('.mediavote-banner-main');
+    await page.waitForSelector('#mediavote-overlay .mediavote-card[data-id="item-1"]');
+    const card1 = await page.evaluate(() => document.querySelector('#mediavote-overlay .mediavote-card[data-id="item-1"]').textContent);
+    check(/8TB 1/.test(card1) && /96% full/.test(card1) && /Last played by AlexG, 3 months ago/.test(card1) && /12 plays, 3 viewers/.test(card1), 'vote card: drive with % full, last played by whom and when, plays and viewers');
+    check(await page.evaluate(() => !!document.querySelector('#mediavote-overlay .mediavote-card[data-id="item-1"] .mediavote-level-critical')), 'drive bar is marked critical above the threshold');
+    check(await page.evaluate(() => /Never watched/.test(document.querySelector('#mediavote-overlay .mediavote-card[data-id="item-2"]').textContent)), '"Never watched" badge');
+    check(await page.evaluate(() => !!document.querySelector('#mediavote-overlay .mediavote-filters summary')), 'filters panel available to voters');
+    check(await page.evaluate(() => Array.prototype.every.call(document.querySelectorAll('#mediavote-overlay .mediavote-toolbar button, #mediavote-overlay .mediavote-filters summary'), b => b.getBoundingClientRect().height >= 43)), 'toolbar controls are at least 44px tall');
+    // Sorting on the server, grid/list switch and lazy loading in the voting view.
+    state.itemQueries = [];
+    await page.selectOption('#mediavote-overlay select[aria-label="Sort by"]', 'size');
+    await page.waitForTimeout(500);
+    check(state.itemQueries.some(q => q.get('sort') === 'size' && q.get('page') === '0'), 'voting view: sorting runs on the server (sort sent, back to the first page)');
+    const wasList = await page.evaluate(() => document.querySelector('#mediavote-overlay .mediavote-grid').classList.contains('mediavote-list'));
+    await page.click('#mediavote-overlay .mediavote-toolbar-row button:has-text("view")');
+    check(await page.evaluate(() => document.querySelector('#mediavote-overlay .mediavote-grid').classList.contains('mediavote-list')) === !wasList, 'voting view: grid/list switch');
+    await page.evaluate(() => document.querySelector('#mediavote-overlay .mediavote-sentinel').scrollIntoView());
+    await page.waitForFunction(() => document.querySelectorAll('#mediavote-overlay .mediavote-card').length === 45, null, { timeout: 3000 }).catch(() => {});
+    check(await page.evaluate(() => document.querySelectorAll('#mediavote-overlay .mediavote-card').length) === 45 && state.itemQueries.some(q => q.get('page') === '1'), 'voting view: more titles load on scroll (second page fetched)');
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(200);
     check(errors.length === 0, 'no console errors (desktop): ' + errors.join(' | '));
     await context.close();
 
@@ -197,6 +224,8 @@ function check(cond, msg) {
     await page.evaluate(() => { document.getElementById('tabHost').innerHTML = '<div data-mediavote-mount="page"></div>'; });
     await page.waitForSelector('#tabHost .mediavote-empty', { timeout: 3000 });
     check(await page.evaluate(() => /No active vote right now/.test(document.querySelector('#tabHost .mediavote-empty').textContent) && /Winter clean/.test(document.querySelector('#tabHost .mediavote-empty').textContent)), '"No active vote" message with last result');
+    check(await page.evaluate(() => /Gone Film — Removed \(37.3 GB\)/.test(document.querySelector('#tabHost .mediavote-result').textContent) && /37.3 GB freed/.test(document.querySelector('#tabHost .mediavote-result').textContent)), 'result shows what was removed, with sizes');
+    check(await page.evaluate(() => { const a = document.querySelector('#tabHost .mediavote-request-link'); return a && a.getAttribute('href') === 'https://requests.example/movie/603' && a.textContent === 'Request it again'; }), 'removed titles get a "Request it again" Jellyseerr link');
     check(errors.length === 0, 'no console errors (phone): ' + errors.join(' | '));
     await context.close();
 
@@ -311,7 +340,7 @@ function check(cond, msg) {
             const url = new URL(route.request().url());
             const p = url.pathname;
             if (p === '/jf/MediaVote/vote') { return route.fulfill({ contentType: 'text/html', body: fs.readFileSync(path.join(assets, 'standalone.html'), 'utf8') }); }
-            if (p === '/jf/MediaVote/client.js') { return route.fulfill({ contentType: 'application/javascript', body: fs.readFileSync(path.join(assets, 'client.js'), 'utf8') }); }
+            if (p === '/jf/MediaVote/client.js') { return route.fulfill({ contentType: 'application/javascript; charset=utf-8', body: fs.readFileSync(path.join(assets, 'client.js'), 'utf8') }); }
             if (p === '/jf/MediaVote/client.css') { return route.fulfill({ contentType: 'text/css', body: fs.readFileSync(path.join(assets, 'client.css'), 'utf8') }); }
             if (p === '/jf/Users/AuthenticateByName') { return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ AccessToken: 'standalone-token', User: { Id: 'u9', Name: 'friend' } }) }); }
             if (p === '/jf/MediaVote/Status') { authHeader = route.request().headers().authorization; return route.fulfill({ contentType: 'application/json', body: JSON.stringify(statusFor(state)) }); }

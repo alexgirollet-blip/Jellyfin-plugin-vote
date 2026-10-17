@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -34,12 +35,14 @@ public sealed class MediaVoteController : MediaVoteControllerBase
     private readonly VoteService _votes;
     private readonly JellyfinUserDirectory _users;
     private readonly LibraryCatalog _catalog;
+    private readonly DriveService _drives;
 
-    public MediaVoteController(VoteService votes, JellyfinUserDirectory users, LibraryCatalog catalog)
+    public MediaVoteController(VoteService votes, JellyfinUserDirectory users, LibraryCatalog catalog, DriveService drives)
     {
         _votes = votes;
         _users = users;
         _catalog = catalog;
+        _drives = drives;
     }
 
     private static PluginConfiguration Config => Plugin.Instance?.Configuration ?? new PluginConfiguration();
@@ -150,7 +153,17 @@ public sealed class MediaVoteController : MediaVoteControllerBase
                 turnoutPercent = r.TurnoutPercent,
                 turnoutMet = r.TurnoutMet,
                 showBanner = recent && _votes.IsEligible(latest, userId) && !latest.ResultDismissedBy.Contains(userId),
-                items = r.Items.Select(i => new { id = i.ItemId, name = i.Name, kind = i.Kind, score = i.Score, status = PublicStatus(i.Status, r.Outcome) }).ToList()
+                totalFreedBytes = r.TotalBytesFreed,
+                items = r.Items.Select(i => new
+                {
+                    id = i.ItemId,
+                    name = i.Name,
+                    kind = i.Kind,
+                    score = i.Score,
+                    status = PublicStatus(i.Status, r.Outcome),
+                    sizeBytes = i.ArrSizeOnDisk > 0 ? i.ArrSizeOnDisk : i.SizeBytes,
+                    requestUrl = i.Status is ItemOutcomeStatus.Removed or ItemOutcomeStatus.Deleted ? RequestUrl(cfg.JellyseerrPublicUrl, i, latest) : null
+                }).ToList()
             };
         }
 
@@ -170,7 +183,7 @@ public sealed class MediaVoteController : MediaVoteControllerBase
 
     [HttpGet("Items")]
     [Authorize]
-    public ActionResult Items([FromQuery] string? search, [FromQuery] string? type, [FromQuery] string? genre, [FromQuery] string? sort, [FromQuery] bool desc = false, [FromQuery] bool mine = false, [FromQuery] int page = 0, [FromQuery] int pageSize = 30)
+    public ActionResult Items([FromQuery] ItemQuery q, [FromQuery] bool desc = false, [FromQuery] bool mine = false)
     {
         var userId = CurrentUserId;
         bool isAdmin = _users.IsAdministrator(userId);
@@ -192,12 +205,12 @@ public sealed class MediaVoteController : MediaVoteControllerBase
         }
 
         var visible = _catalog.GetVisibleIds(session.Id, userId, session.Candidates.Select(c => c.ItemId).ToList());
-        var result = ViewBuilder.BuildPage(
-            session,
-            userId,
-            isAdmin,
-            new ItemQuery { Search = Limit(search, 100), Type = type, Genre = Limit(genre, 100), Sort = sort, Descending = desc, MineOnly = mine, Page = page, PageSize = pageSize },
-            visible.Contains);
+        q ??= new ItemQuery();
+        q.Search = Limit(q.Search, 100);
+        q.Genre = Limit(q.Genre, 100);
+        q.Descending |= desc;
+        q.MineOnly |= mine;
+        var result = ViewBuilder.BuildPage(session, userId, isAdmin, q, visible.Contains, SafeDrives(), Config.WatchDetailsForVoters.ToString(), _votes.Clock.UtcNow);
         return Json(result);
     }
 
@@ -233,6 +246,23 @@ public sealed class MediaVoteController : MediaVoteControllerBase
         return r.Ok ? Json(new { ok = true }) : Error(404, r.Error!);
     }
 
+    /// <summary>"Request it again" link: {Jellyseerr public URL}/movie/{tmdbId} or /tv/{tmdbId}; null without a URL or TMDb id.</summary>
+    internal static string? RequestUrl(string? publicUrl, ItemOutcome item, VoteSession session)
+    {
+        if (string.IsNullOrWhiteSpace(publicUrl))
+        {
+            return null;
+        }
+
+        var c = session.Candidates.FirstOrDefault(x => x.ItemId == item.ItemId);
+        if (c is null || !c.ProviderIds.TryGetValue("Tmdb", out var tmdb) || !int.TryParse(tmdb, NumberStyles.Integer, CultureInfo.InvariantCulture, out var id) || id <= 0)
+        {
+            return null;
+        }
+
+        return publicUrl.TrimEnd('/') + (item.Kind == MediaKind.Series ? "/tv/" : "/movie/") + id.ToString(CultureInfo.InvariantCulture);
+    }
+
     internal static string PublicStatus(ItemOutcomeStatus status, OutcomeMode outcome) => status switch
     {
         ItemOutcomeStatus.Removed or ItemOutcomeStatus.Deleted => "removed",
@@ -242,6 +272,20 @@ public sealed class MediaVoteController : MediaVoteControllerBase
         ItemOutcomeStatus.Reported => "kept",
         _ => "pending"
     };
+
+    private IReadOnlyList<DriveStat> SafeDrives()
+    {
+        try
+        {
+            return _drives.GetDrives();
+        }
+#pragma warning disable CA1031 // drive bars are informational
+        catch (Exception)
+#pragma warning restore CA1031
+        {
+            return Array.Empty<DriveStat>();
+        }
+    }
 
     /// <summary>Server-side enforcement of the kill switch and of preview mode (admins only).</summary>
     private ActionResult? Blocked(bool isAdmin)

@@ -79,7 +79,30 @@ public enum TiePolicy
     FlagForAdmin,
 
     /// <summary>Act on every tied item, even if that exceeds N.</summary>
-    IncludeAllTied
+    IncludeAllTied,
+
+    /// <summary>The larger title wins the free place(s). Exactly equal sizes are still flagged for the admin.</summary>
+    LargerSizeWins,
+
+    /// <summary>The title watched longest ago (never watched first) wins. Equal dates are flagged for the admin.</summary>
+    LeastRecentlyWatchedWins,
+
+    /// <summary>The title added longest ago wins. Equal dates are flagged for the admin.</summary>
+    OldestAddedWins
+}
+
+/// <summary>How many winners are acted on.</summary>
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum TargetMode
+{
+    /// <summary>The top N (default).</summary>
+    FixedCount,
+
+    /// <summary>Winners in rank order until the target drive has at least TargetValue GB free.</summary>
+    FreeSpace,
+
+    /// <summary>Winners in rank order until the target drive is below TargetValue % full.</summary>
+    BelowPercent
 }
 
 /// <summary>A vote either asks for removal or (optionally) to keep an item.</summary>
@@ -188,6 +211,21 @@ public sealed class CandidateItem
 
     public Dictionary<string, string> ProviderIds { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>Name of the user who played it most recently (Jellyfin user data), if known.</summary>
+    public string? LastPlayedBy { get; set; }
+
+    /// <summary>Users who have played it (any episode, for a series).</summary>
+    public List<Guid> ViewerIds { get; set; } = new();
+
+    /// <summary>Series only: number of episodes on disk.</summary>
+    public int EpisodeCount { get; set; }
+
+    /// <summary>Series only: episodes that at least one user has played.</summary>
+    public int PlayedEpisodeCount { get; set; }
+
+    /// <summary>Bytes on each drive (key = the drive's mount point, see <see cref="DriveStat.Key"/>). A series can span drives.</summary>
+    public Dictionary<string, long> DriveBytes { get; set; } = new(StringComparer.Ordinal);
+
     /// <summary>True when exactly one Sonarr/Radarr entry manages it, false when none does, null when unknown (checked read-only when the vote is built).</summary>
     public bool? Removable { get; set; }
 
@@ -262,6 +300,24 @@ public sealed class SessionSettings
 
     /// <summary>Safety cap on titles Sonarr/Radarr may delete for this vote. Copied from the settings by the server when the vote is created.</summary>
     public int MaxRemovals { get; set; }
+
+    /// <summary>Top N (default), or a free-space target on one drive; <see cref="WinnerCount"/> is then the maximum.</summary>
+    public TargetMode TargetMode { get; set; } = TargetMode.FixedCount;
+
+    /// <summary>Drive key (mount point) for a free-space target.</summary>
+    public string? TargetDrive { get; set; }
+
+    /// <summary>GB free (FreeSpace) or percent full (BelowPercent).</summary>
+    public double TargetValue { get; set; }
+
+    /// <summary>"Delete via Sonarr/Radarr": prepare the list at the deadline and wait for the admin's approval. Server-set from Settings.</summary>
+    public bool RequireApproval { get; set; }
+
+    /// <summary>Approve automatically this many hours after the deadline if the admin has not acted (0 = never). Server-set.</summary>
+    public int AutoApproveHours { get; set; }
+
+    /// <summary>Template this vote was created from, if any.</summary>
+    public string? TemplateId { get; set; }
 
     public TiePolicy TiePolicy { get; set; } = TiePolicy.FlagForAdmin;
 
@@ -402,6 +458,16 @@ public sealed class SessionResult
     public long TotalBytesSelected { get; set; }
 
     public ExecutionState Execution { get; set; } = ExecutionState.NotStarted;
+
+    /// <summary>Titles prepared for approval, in rank order.</summary>
+    public List<Guid> PlannedItemIds { get; set; } = new();
+
+    /// <summary>When the auto-approve timer fires (null = never).</summary>
+    public DateTime? ApprovalDueUtc { get; set; }
+
+    public string? ApprovedBy { get; set; }
+
+    public DateTime? ApprovedUtc { get; set; }
 }
 
 /// <summary>Progress of acting on the winners. Used to detect a run interrupted by a crash/restart.</summary>
@@ -414,7 +480,13 @@ public enum ExecutionState
     Interrupted,
 
     /// <summary>Nothing to execute (turnout not met, no winners).</summary>
-    Skipped
+    Skipped,
+
+    /// <summary>"Delete via Sonarr/Radarr": the final list is ready and waits for the admin's approval. Nothing has been touched.</summary>
+    AwaitingApproval,
+
+    /// <summary>The admin rejected the prepared list: nothing was removed.</summary>
+    Rejected
 }
 
 /// <summary>A vote session with its ballots and (once resolved) its result.</summary>

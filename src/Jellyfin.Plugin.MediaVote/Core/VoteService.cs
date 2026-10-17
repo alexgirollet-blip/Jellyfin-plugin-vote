@@ -28,6 +28,7 @@ public sealed class VoteService : IDisposable
     private readonly IMediaGateway _media;
     private readonly Func<bool, IRemovalBackend> _backend;
     private readonly Func<bool> _isPaused;
+    private readonly IDriveStats? _drives;
     private readonly INotifier _notifier;
     private readonly IAuditLog _audit;
     private readonly IClock _clock;
@@ -41,8 +42,10 @@ public sealed class VoteService : IDisposable
         INotifier notifier,
         IAuditLog audit,
         IClock clock,
-        Func<bool>? isPaused = null)
+        Func<bool>? isPaused = null,
+        IDriveStats? drives = null)
     {
+        _drives = drives;
         _store = store;
         _users = users;
         _media = media;
@@ -77,6 +80,14 @@ public sealed class VoteService : IDisposable
 
     public bool IsEligible(VoteSession session, Guid userId)
         => VoteRules.IsEligible(session, userId, _users.IsActive(userId));
+
+    /// <summary>Eligible users who have not voted yet, by name.</summary>
+    public IReadOnlyList<string> NonVoterNames(VoteSession s)
+    {
+        var voted = s.Votes.Select(v => v.UserId).ToHashSet();
+        var eligible = s.Settings.AllUsers ? _users.GetActiveUserIds() : s.Settings.EligibleUserIds.Where(_users.IsActive).ToList();
+        return eligible.Where(u => !voted.Contains(u)).Select(_users.GetUserName).OrderBy(n => n, StringComparer.OrdinalIgnoreCase).ToList();
+    }
 
     // ------------------------------------------------------------------ admin: lifecycle
 
@@ -282,7 +293,7 @@ public sealed class VoteService : IDisposable
             });
             if (claimed)
             {
-                await _notifier.ClosingSoonAsync(_store.Get(s.Id)!, cancellationToken).ConfigureAwait(false);
+                await _notifier.ClosingSoonAsync(_store.Get(s.Id)!, NonVoterNames(s), cancellationToken).ConfigureAwait(false);
             }
         }
     }
@@ -292,7 +303,8 @@ public sealed class VoteService : IDisposable
     {
         var s = _store.Get(id) ?? throw new KeyNotFoundException("Vote not found.");
         var result = BuildResult(s, dryRun: true);
-        var winners = Tally.SelectWinners(result.Ranking, s.Settings.WinnerCount, s.Settings.TiePolicy);
+        var winners = Plan(s, result.Ranking);
+        result.Notes.AddRange(winners.Notes);
         var executor = new ResolutionExecutor(_media, _backend(true), NullAudit.Instance, _clock);
         result.Items = await executor.RunAsync(s.Id, winners.Winners, s.Candidates.ToDictionary(c => c.ItemId), ExecutionMode.DryRun, ExecutionLimits.None, cancellationToken: cancellationToken).ConfigureAwait(false);
         AddTiedOutcomes(result, winners, s);
@@ -484,7 +496,7 @@ public sealed class VoteService : IDisposable
         {
             // Winners the interrupted run never reached have no outcome yet.
             var done = s.Result.Items.Select(o => o.ItemId).ToHashSet();
-            retryable.AddRange(Tally.SelectWinners(s.Result.Ranking, s.Settings.WinnerCount, s.Settings.TiePolicy).Winners.Select(w => w.ItemId).Where(i => !done.Contains(i)));
+            retryable.AddRange(Plan(s, s.Result.Ranking).Winners.Select(w => w.ItemId).Where(i => !done.Contains(i)));
         }
         if (retryable.Count == 0)
         {
@@ -557,6 +569,143 @@ public sealed class VoteService : IDisposable
         }
     }
 
+    // ------------------------------------------------------------------ approval ("Delete via Sonarr/Radarr")
+
+    /// <summary>Sessions whose prepared removal list waits for the admin.</summary>
+    public IReadOnlyList<VoteSession> AwaitingApproval()
+        => _store.GetAll().Where(s => s.Result?.Execution == ExecutionState.AwaitingApproval).OrderBy(s => s.Result!.ResolvedUtc).ToList();
+
+    /// <summary>The admin approves the prepared list: Sonarr/Radarr now delete those titles (each re-checked first).</summary>
+    public async Task<OpResult> ApproveAsync(Guid id, string adminName, CancellationToken cancellationToken)
+    {
+        var s = _store.Get(id);
+        if (s?.Result is null || s.Result.Execution != ExecutionState.AwaitingApproval)
+        {
+            return OpResult.Fail("This vote is not waiting for approval.");
+        }
+
+        if (_isPaused())
+        {
+            return OpResult.Fail("Media Vote is disabled by the DISABLE file. Remove it and restart Jellyfin first.");
+        }
+
+        var planned = s.Result.PlannedItemIds.ToList();
+        _audit.Write("removal_approved", adminName, id, planned.Count + " title(s): " + string.Join(", ", planned));
+        _store.Update(id, x =>
+        {
+            x.Result!.ApprovedBy = adminName;
+            x.Result.ApprovedUtc = _clock.UtcNow;
+            x.Result.ApprovalDueUtc = null;
+            x.Result.Execution = ExecutionState.Running;
+            return true;
+        });
+        await _resolveLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await ExecuteWinnersAsync(id, planned, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _resolveLock.Release();
+        }
+
+        await _notifier.ResultsAsync(_store.Get(id)!, cancellationToken).ConfigureAwait(false);
+        return OpResult.Success;
+    }
+
+    /// <summary>The admin rejects the prepared list: nothing is removed.</summary>
+    public OpResult Reject(Guid id, string adminName)
+        => _store.Update(id, x =>
+        {
+            if (x.Result is not { Execution: ExecutionState.AwaitingApproval } r)
+            {
+                return OpResult.Fail("This vote is not waiting for approval.");
+            }
+
+            r.Execution = ExecutionState.Rejected;
+            r.ApprovalDueUtc = null;
+            foreach (var o in r.Items.Where(o => r.PlannedItemIds.Contains(o.ItemId)))
+            {
+                o.Status = ItemOutcomeStatus.Reported;
+                o.NeedsAttention = false;
+                o.Message = "Kept: " + adminName + " rejected the removal.";
+            }
+
+            r.Notes.Add($"Removal rejected by {adminName}. Nothing was removed.");
+            r.NeedsAdminAttention = ComputeAttention(r);
+            _audit.Write("removal_rejected", adminName, id, string.Join(", ", r.PlannedItemIds));
+            return OpResult.Success;
+        });
+
+    /// <summary>Approves prepared lists whose auto-approve timer has expired (called by the deadline timer).</summary>
+    public async Task AutoApproveDueAsync(CancellationToken cancellationToken)
+    {
+        var now = _clock.UtcNow;
+        foreach (var s in AwaitingApproval().Where(s => s.Result!.ApprovalDueUtc is { } due && due <= now).ToList())
+        {
+            await ApproveAsync(s.Id, "auto-approve timer", cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>Winners for this vote: top N with its tie rule, or the free-space target.</summary>
+    private WinnerSelection Plan(VoteSession s, IReadOnlyList<ItemTally> ranking)
+    {
+        IReadOnlyList<DriveStat>? drives = null;
+        if (s.Settings.TargetMode != TargetMode.FixedCount)
+        {
+            try
+            {
+                drives = _drives?.GetDrives();
+            }
+#pragma warning disable CA1031 // unknown drive usage selects nothing (safe)
+            catch (Exception)
+#pragma warning restore CA1031
+            {
+                drives = null;
+            }
+        }
+
+        return WinnerPlanner.Plan(s.Settings, ranking, s.Candidates.ToDictionary(c => c.ItemId), drives);
+    }
+
+    /// <summary>Builds the final list with read-only lookups only, then waits for the admin. Nothing is touched.</summary>
+    private async Task PrepareForApprovalAsync(Guid id, WinnerSelection selection, IReadOnlyDictionary<Guid, CandidateItem> candidates, CancellationToken cancellationToken)
+    {
+        var executor = new ResolutionExecutor(_media, _backend(true), NullAudit.Instance, _clock);
+        var planned = await executor.RunAsync(id, selection.Winners, candidates, ExecutionMode.DryRun, ExecutionLimits.None, cancellationToken: cancellationToken).ConfigureAwait(false);
+        var s = _store.Update(id, x =>
+        {
+            var r = x.Result!;
+            foreach (var o in planned)
+            {
+                o.Message = "Waiting for your approval. " + o.Message;
+                r.Items.RemoveAll(e => e.ItemId == o.ItemId);
+                r.Items.Add(o);
+            }
+
+            r.Notes.AddRange(selection.Notes.Where(n => !r.Notes.Contains(n)));
+            AddTiedOutcomes(r, selection, x);
+            r.PlannedItemIds = selection.Winners.Select(w => w.ItemId).ToList();
+            r.Execution = r.PlannedItemIds.Count == 0 ? ExecutionState.Skipped : ExecutionState.AwaitingApproval;
+            r.ApprovalDueUtc = r.PlannedItemIds.Count > 0 && x.Settings.AutoApproveHours > 0 ? _clock.UtcNow.AddHours(x.Settings.AutoApproveHours) : null;
+            r.TotalBytesSelected = r.Items.Where(o => o.Status != ItemOutcomeStatus.TiedAwaitingAdmin).Sum(Freed);
+            if (r.PlannedItemIds.Count > 0)
+            {
+                r.Notes.Add(r.ApprovalDueUtc is { } due
+                    ? string.Create(CultureInfo.InvariantCulture, $"Waiting for approval. Approved automatically at {due:u} unless you approve or reject it first.")
+                    : "Waiting for your approval: nothing is removed until you approve.");
+            }
+
+            r.NeedsAdminAttention = ComputeAttention(r);
+            return x;
+        });
+        _audit.Write("approval_needed", "system", id, string.Join(", ", s.Result!.PlannedItemIds));
+        if (s.Result.Execution == ExecutionState.AwaitingApproval)
+        {
+            await _notifier.ApprovalNeededAsync(s, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
     // ------------------------------------------------------------------ internals
 
     private SessionResult BuildResult(VoteSession s, bool dryRun)
@@ -587,7 +736,7 @@ public sealed class VoteService : IDisposable
         WinnerSelection? selection = null;
         if (onlyItems is null)
         {
-            selection = Tally.SelectWinners(result.Ranking, s.Settings.WinnerCount, s.Settings.TiePolicy);
+            selection = Plan(s, result.Ranking);
             toRun = selection.Winners;
         }
         else
@@ -597,6 +746,12 @@ public sealed class VoteService : IDisposable
         }
 
         var mode = s.Settings.Outcome == OutcomeMode.DeleteViaArr ? ExecutionMode.Remove : ExecutionMode.Report;
+        if (onlyItems is null && mode == ExecutionMode.Remove && s.Settings.RequireApproval)
+        {
+            await PrepareForApprovalAsync(id, selection!, candidates, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
         _store.Update(id, x =>
         {
             x.Result!.Execution = toRun.Count == 0 && selection is not null && !selection.TieCrossesCutoff ? ExecutionState.Skipped : ExecutionState.Running;
@@ -630,6 +785,7 @@ public sealed class VoteService : IDisposable
 
             if (selection is not null)
             {
+                r.Notes.AddRange(selection.Notes.Where(n => !r.Notes.Contains(n)));
                 AddTiedOutcomes(r, selection, x);
                 if (selection.Winners.Count == 0 && !selection.TieCrossesCutoff)
                 {
@@ -683,7 +839,7 @@ public sealed class VoteService : IDisposable
     private static bool ComputeAttention(SessionResult r)
         => r.TiedItemIds.Count > 0
            || !r.TurnoutMet
-           || r.Execution == ExecutionState.Interrupted
+           || r.Execution is ExecutionState.Interrupted or ExecutionState.AwaitingApproval
            || r.Items.Any(o => o.NeedsAttention || o.Status is ItemOutcomeStatus.SkippedExternalFailure or ItemOutcomeStatus.DeleteFailed or ItemOutcomeStatus.PreflightFailed);
 
     /// <summary>Statuses Retry may pick up. Removed and protected titles are never retried.</summary>

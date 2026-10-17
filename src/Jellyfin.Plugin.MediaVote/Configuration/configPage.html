@@ -37,6 +37,19 @@
         #MediaVoteConfigPage .mv-pill { display: inline-block; padding: .1em .6em; border-radius: 1em; border: 1px solid rgba(128,128,128,.5); font-size: .85em; }
         #MediaVoteConfigPage textarea.mv-code { width: 100%; min-height: 6em; font-family: monospace; font-size: 13px; }
         #MediaVoteConfigPage [hidden] { display: none !important; }
+        #MediaVoteConfigPage .mv-chips { display: flex; flex-wrap: wrap; gap: .4em; margin: .4em 0; }
+        #MediaVoteConfigPage .mv-chips button { min-height: 44px; margin: 0; }
+        #MediaVoteConfigPage .mv-chips button[aria-pressed="true"] { outline: 2px solid currentColor; outline-offset: -2px; }
+        #MediaVoteConfigPage .mv-inline { display: flex; flex-wrap: wrap; gap: .5em; align-items: center; }
+        #MediaVoteConfigPage .mv-inline input, #MediaVoteConfigPage .mv-inline select { min-height: 44px; font-size: 16px; padding: .3em .5em; border-radius: .3em; border: 1px solid rgba(128,128,128,.45); background: rgba(128,128,128,.12); color: inherit; }
+        #MediaVoteConfigPage .mv-inline input[type=number] { width: 5.5em; }
+        #MediaVoteConfigPage .mv-deadline-result { font-weight: 600; min-height: 1.4em; }
+        #MediaVoteConfigPage .mv-error { color: #e57373; }
+        #MediaVoteConfigPage .mv-bar { display: inline-block; vertical-align: middle; width: 12em; max-width: 50vw; height: .7em; border-radius: .35em; background: rgba(128,128,128,.25); overflow: hidden; }
+        #MediaVoteConfigPage .mv-bar > span { display: block; height: 100%; background: currentColor; opacity: .75; }
+        #MediaVoteConfigPage .mv-level-warning .mv-bar > span { background: #d39e00; opacity: 1; }
+        #MediaVoteConfigPage .mv-level-critical .mv-bar > span { background: #d9534f; opacity: 1; }
+        #MediaVoteConfigPage .mv-hbar { height: 1.1em; background: currentColor; opacity: .6; border-radius: .2em; min-width: 2px; }
     </style>
     <div data-role="content">
         <div class="content-primary mv-wrap">
@@ -46,12 +59,15 @@
                 <button is="emby-button" type="button" class="raised emby-button" role="tab" data-tab="votes" aria-selected="true">Votes</button>
                 <button is="emby-button" type="button" class="raised emby-button" role="tab" data-tab="new">New vote</button>
                 <button is="emby-button" type="button" class="raised emby-button" role="tab" data-tab="settings">Settings</button>
+                <button is="emby-button" type="button" class="raised emby-button" role="tab" data-tab="storage">Storage</button>
+                <button is="emby-button" type="button" class="raised emby-button" role="tab" data-tab="history">History</button>
                 <button is="emby-button" type="button" class="raised emby-button" role="tab" data-tab="status">Status &amp; setup</button>
                 <button is="emby-button" type="button" class="raised emby-button" role="tab" data-tab="audit">Audit log</button>
             </div>
 
             <!-- ===================== VOTES ===================== -->
             <section data-panel="votes" role="tabpanel">
+                <div id="mvAlerts"></div>
                 <div id="mvOpen"></div>
                 <div id="mvDetail"></div>
                 <div class="mv-card">
@@ -63,6 +79,15 @@
             <!-- ===================== NEW VOTE ===================== -->
             <section data-panel="new" role="tabpanel" hidden>
                 <form id="mvNewForm" novalidate>
+                    <div class="mv-card" id="mvTemplateBar">
+                        <h3>Start from a template</h3>
+                        <div class="mv-inline">
+                            <select id="mvTemplateSelect" aria-label="Template"><option value="">No template</option></select>
+                            <button is="emby-button" type="button" class="raised emby-button" id="mvTemplateUse">Use</button>
+                            <button is="emby-button" type="button" class="raised emby-button" id="mvTemplateDelete">Delete template</button>
+                        </div>
+                        <p class="mv-muted" id="mvTemplateInfo"></p>
+                    </div>
                     <div class="mv-card">
                         <h3>About the vote</h3>
                         <div class="mv-field"><label for="mvTitle">Title</label><input id="mvTitle" maxlength="200" required placeholder="e.g. Spring clean-up"></div>
@@ -99,10 +124,14 @@
                         </div>
                         <div id="mvLibBox" hidden><div id="mvLibError"></div><div class="mv-list" id="mvLibList"></div></div>
                         <div id="mvPickBox" hidden>
-                            <div class="mv-field"><label for="mvPickSearch">Find titles</label><input id="mvPickSearch" type="search" placeholder="Type a title" autocomplete="off"></div>
-                            <div class="mv-list" id="mvPickResults"></div>
-                            <p class="mv-muted">Picked:</p>
-                            <div class="mv-list" id="mvPicked"></div>
+                            <div id="mvBrowser"></div>
+                            <div id="mvPickFallback" hidden>
+                                <p class="mv-muted">The media browser could not load (Media Vote's script is unavailable, for example because of the DISABLE file). Simple search instead:</p>
+                                <div class="mv-field"><label for="mvPickSearch">Find titles</label><input id="mvPickSearch" type="search" placeholder="Type a title" autocomplete="off"></div>
+                                <div class="mv-list" id="mvPickResults"></div>
+                                <p class="mv-muted">Picked:</p>
+                                <div class="mv-list" id="mvPicked"></div>
+                            </div>
                         </div>
                         <h4>Optional filters</h4>
                         <label class="mv-check"><input type="checkbox" id="mvNever"> <span>Only titles nobody has ever watched</span></label>
@@ -115,10 +144,19 @@
                         <h3>Rules</h3>
                         <div class="mv-grid2">
                             <div class="mv-field"><label for="mvVotes">Votes per user</label><input id="mvVotes" type="number" min="1" max="1000" value="3"></div>
-                            <div class="mv-field"><label for="mvWinners">Number of winners to act on (N)</label><input id="mvWinners" type="number" min="1" max="1000" value="1"></div>
-                            <div class="mv-field"><label for="mvDeadline">Deadline (<span class="mvTz">Europe/London</span>)</label><input id="mvDeadline" type="datetime-local" required></div>
+                            <div class="mv-field"><label for="mvTargetMode">What to act on</label>
+                                <select id="mvTargetMode">
+                                    <option value="FixedCount">The top N titles</option>
+                                    <option value="FreeSpace">Winners until a drive has at least … GB free</option>
+                                    <option value="BelowPercent">Winners until a drive is below … % full</option>
+                                </select>
+                            </div>
+                            <div class="mv-field"><label for="mvWinners" id="mvWinnersLabel">Number of winners to act on (N)</label><input id="mvWinners" type="number" min="1" max="1000" value="1"></div>
+                            <div class="mv-field" id="mvTargetDriveBox" hidden><label for="mvTargetDrive">Drive</label><select id="mvTargetDrive"></select></div>
+                            <div class="mv-field" id="mvTargetValueBox" hidden><label for="mvTargetValue" id="mvTargetValueLabel">GB free</label><input id="mvTargetValue" type="number" min="1" step="1" value="500"></div>
                             <div class="mv-field"><label for="mvTurnout">Minimum turnout % (0 = off)</label><input id="mvTurnout" type="number" min="0" max="100" value="0"></div>
                         </div>
+                        <div class="mv-field"><span>Deadline (<span class="mvTz">Europe/London</span>)</span><div id="mvDeadlinePicker"></div></div>
                         <label class="mv-check"><input type="checkbox" id="mvMultiple"> <span>Allow several votes on the same title (default: off)</span></label>
                         <label class="mv-check"><input type="checkbox" id="mvKeep"> <span>Allow "keep" votes (each keep vote subtracts one from a title's score)</span></label>
                         <div class="mv-field" id="mvKeepCountBox" hidden><label for="mvKeepCount">Keep votes per user</label><input id="mvKeepCount" type="number" min="1" max="1000" value="1"></div>
@@ -126,7 +164,10 @@
                         <label class="mv-check"><input type="checkbox" id="mvTallies" checked> <span>Show live vote counts while the vote is open</span></label>
                         <div class="mv-field"><label for="mvTie">If a tie crosses the cut-off</label>
                             <select id="mvTie">
-                                <option value="FlagForAdmin">Act on none of the tied titles; let me break the tie (default)</option>
+                                <option value="FlagForAdmin">Ask me: act on none of the tied titles until I break the tie (default)</option>
+                                <option value="LargerSizeWins">The larger title wins</option>
+                                <option value="LeastRecentlyWatchedWins">The title watched longest ago wins (never watched first)</option>
+                                <option value="OldestAddedWins">The title added longest ago wins</option>
                                 <option value="IncludeAllTied">Act on all tied titles (may exceed N)</option>
                             </select>
                         </div>
@@ -142,6 +183,20 @@
                             <label class="mv-check"><input type="checkbox" id="mvIncludeUnmanaged"> <span>Also let people vote on titles Sonarr/Radarr do not manage (they would only be listed for removal by hand). Off by default.</span></label>
                             <p class="mv-muted" id="mvMaxNote"></p>
                         </div>
+                    </div>
+                    <div class="mv-card">
+                        <details id="mvSaveTemplate">
+                            <summary>Save these settings as a template</summary>
+                            <div class="mv-grid2">
+                                <div class="mv-field"><label for="mvTplName">Template name</label><input id="mvTplName" maxlength="100" placeholder="e.g. Monthly clean-up"></div>
+                                <div class="mv-field"><label for="mvTplRecur">Recurring</label>
+                                    <select id="mvTplRecur"><option value="None">No: I start it myself</option><option value="Weekly">Every week: prepare a draft for me to review</option><option value="Monthly">Every month: prepare a draft for me to review</option></select>
+                                </div>
+                                <div class="mv-field" id="mvTplFirstBox" hidden><label for="mvTplFirst">First draft on</label><input id="mvTplFirst" type="datetime-local"></div>
+                            </div>
+                            <p class="mv-muted">A recurring template never opens a vote by itself: it prepares a draft and tells you (Votes tab and webhook). You review it, then press Create vote.</p>
+                            <div class="mv-row"><button is="emby-button" type="button" class="raised emby-button" id="mvTplSave">Save template</button></div>
+                        </details>
                     </div>
                     <div class="mv-card">
                         <div class="mv-row">
@@ -204,15 +259,47 @@
                     </div>
                     <div class="mv-card" id="sArr"></div>
                     <div class="mv-card">
+                        <h3>Approval and results</h3>
+                        <label class="mv-check"><input type="checkbox" id="sApproval"> <span>"Delete via Sonarr/Radarr": prepare the final list at the deadline and wait for my approval (recommended)</span></label>
+                        <div class="mv-grid2">
+                            <div class="mv-field"><label for="sAutoApprove">Approve automatically after … hours if I do nothing (0 = never)</label><input id="sAutoApprove" type="number" min="0" max="720"></div>
+                            <div class="mv-field"><label for="sSeerrPublic">Public Jellyseerr address for "Request it again" links (optional)</label><input id="sSeerrPublic" inputmode="url" autocomplete="off" placeholder="https://requests.example.com"></div>
+                        </div>
+                        <div class="mv-field"><label for="sWatch">Watch details voters see on title cards</label>
+                            <select id="sWatch"><option value="NamesAndTime">Who watched it last and when, plays and viewers (default)</option><option value="CountsOnly">Play and viewer counts only</option><option value="Hidden">Nothing about watching</option></select>
+                        </div>
+                    </div>
+                    <div class="mv-card">
+                        <h3>Drives</h3>
+                        <p class="mv-muted">Detected from the media folders (read-only). Give each drive a friendly name; it appears on every title card. Two folders on the same filesystem are one drive.</p>
+                        <div id="sDrives"><span class="mv-muted">Loading…</span></div>
+                        <div class="mv-grid2">
+                            <div class="mv-field"><label for="sWarn">Warning above … % full</label><input id="sWarn" type="number" min="1" max="99"></div>
+                            <div class="mv-field"><label for="sCrit">Critical above … % full</label><input id="sCrit" type="number" min="1" max="100"></div>
+                        </div>
+                    </div>
+                    <div class="mv-card">
                         <h3>Webhook (optional)</h3>
                         <div class="mv-field"><label for="sHookUrl">Webhook URL (stored masked)</label><input id="sHookUrl" type="password" autocomplete="off" placeholder="https://discord.com/api/webhooks/…"></div>
                         <div class="mv-field"><label for="sHookKind">Format</label><select id="sHookKind"><option value="Discord">Discord</option><option value="Generic">Generic JSON</option></select></div>
                         <label class="mv-check"><input type="checkbox" id="sHookOpen"> <span>Vote opened</span></label>
                         <label class="mv-check"><input type="checkbox" id="sHookSoon"> <span>Closing soon</span></label>
                         <label class="mv-check"><input type="checkbox" id="sHookResults"> <span>Results</span></label>
+                        <label class="mv-check"><input type="checkbox" id="sHookApproval"> <span>Approval needed, and recurring drafts ready</span></label>
+                        <label class="mv-check"><input type="checkbox" id="sHookNonVoters"> <span>Add "Not voted yet: …" to the closing-soon message</span></label>
                     </div>
                     <div class="mv-row"><button is="emby-button" type="submit" class="raised button-submit emby-button">Save settings</button></div>
                 </form>
+            </section>
+
+            <!-- ===================== STORAGE ===================== -->
+            <section data-panel="storage" role="tabpanel" hidden>
+                <div id="mvStorage"></div>
+            </section>
+
+            <!-- ===================== HISTORY ===================== -->
+            <section data-panel="history" role="tabpanel" hidden>
+                <div id="mvStats"></div>
             </section>
 
             <!-- ===================== STATUS ===================== -->
@@ -314,6 +401,9 @@
             Array.prototype.forEach.call(page.querySelectorAll('[data-panel]'), function (p) { p.hidden = p.getAttribute('data-panel') !== name; });
             if (name === 'audit') { loadAudit(); }
             if (name === 'status' || name === 'votes') { loadOverview(); }
+            if (name === 'storage') { loadStorage(); }
+            if (name === 'history') { loadStats(); }
+            if (name === 'new') { loadTemplates(); loadTargetDrives(); if ($('#mvScope').value === 'HandPicked') { ensureBrowser(); } }
         }
 
         // ---------------- overview / votes
@@ -321,7 +411,7 @@
             return api('GET', 'Overview').then(function (o) {
                 data.overview = o;
                 Array.prototype.forEach.call(page.querySelectorAll('.mvTz'), function (e) { e.textContent = o.timeZone; });
-                if (!$('#mvDeadline').value) { $('#mvDeadline').value = o.defaultDeadlineInput; }
+                renderAlerts(o);
                 renderHistory(o);
                 renderOpen(o);
                 renderStatus(o);
@@ -383,10 +473,16 @@
             card.appendChild(area);
 
             if (s.status === 'Open') {
-                var ext = h('input', { type: 'datetime-local', value: d.deadlineLocalInput, 'aria-label': 'New deadline' });
-                actions.appendChild(h('span', { className: 'mv-field', style: 'margin:0' }, [ext]));
-                actions.appendChild(btn('Extend', function () {
-                    api('POST', 'Sessions/' + s.id + '/Extend', { deadlineLocal: ext.value }).then(done('Deadline updated.'), fail);
+                actions.appendChild(btn('Change deadline', function () {
+                    var old = area.querySelector('.mv-extend');
+                    if (old) { old.remove(); return; }
+                    var box = h('div', { className: 'mv-card mv-extend' }, [h('h4', { text: 'New deadline (currently ' + d.deadlineLocal + ')' })]);
+                    var picker = DeadlinePicker(box, { exact: d.deadlineLocalInput, remember: false });
+                    box.appendChild(h('div', { className: 'mv-row' }, [btn('Save new deadline', function () {
+                        if (!picker.ok()) { msg(picker.error() || 'Choose a valid deadline.', true); return; }
+                        api('POST', 'Sessions/' + s.id + '/Extend', { deadline: picker.spec() }).then(done('Deadline updated.'), fail);
+                    }, true)]));
+                    area.appendChild(box);
                 }));
                 actions.appendChild(btn('Close now', function () {
                     confirmBox(area, 'Close the vote now and resolve it' + (st.outcome === 'DeleteViaArr' ? ' — Sonarr/Radarr will DELETE the winners and their files' : '') + '?', 'Close now', function () {
@@ -411,6 +507,26 @@
                 }, fail);
             }));
 
+            if (r && r.execution === 'AwaitingApproval') {
+                var appr = h('div', { className: 'mv-warn', role: 'alert' }, [
+                    h('strong', { text: 'Waiting for your approval. ' }),
+                    h('span', { text: r.plannedItemIds.length + ' title(s) are ready to be deleted by Sonarr/Radarr. Nothing has been touched yet.' + (r.approvalDueUtc ? ' Approved automatically at ' + new Date(r.approvalDueUtc).toLocaleString() + ' unless you act first.' : '') })
+                ]);
+                appr.appendChild(h('div', { className: 'mv-row' }, [
+                    btn('Approve removal', function () {
+                        confirmBox(appr, 'Approve? Sonarr/Radarr will delete these ' + r.plannedItemIds.length + ' title(s) and their files now (each is looked up again first).', 'Approve', function () {
+                            loading(true);
+                            api('POST', 'Sessions/' + s.id + '/Approve').then(done('Approved: removal finished. Check the result.'), fail).then(function () { loading(false); });
+                        });
+                    }, true),
+                    btn('Reject (keep everything)', function () {
+                        confirmBox(appr, 'Reject? Nothing will be removed.', 'Reject', function () {
+                            api('POST', 'Sessions/' + s.id + '/Reject').then(done('Rejected: nothing was removed.'), fail);
+                        });
+                    })
+                ]));
+                card.appendChild(appr);
+            }
             if (r) {
                 if (r.tiedItemIds && r.tiedItemIds.length) {
                     var tie = h('div', { className: 'mv-warn' }, [h('strong', { text: 'Tie: choose up to ' + r.tieSlots + ' title(s) to act on. Unchosen tied titles are kept.' })]);
@@ -529,7 +645,14 @@
                 $('#mvMaxNote').textContent = 'Safety maximum: Sonarr/Radarr remove at most ' + (o.maxRemovalsPerVote || 5) + ' title(s) per vote (Settings). ' + (o.arrInstanceCount ? '' : 'No Sonarr/Radarr instance is configured yet (Settings), so nothing could be removed.');
             });
         });
-        $('#mvScope').addEventListener('change', function () { var v = $('#mvScope').value; $('#mvLibBox').hidden = v !== 'SpecificLibraries'; $('#mvPickBox').hidden = v !== 'HandPicked'; });
+        $('#mvScope').addEventListener('change', function () {
+            var v = $('#mvScope').value;
+            $('#mvLibBox').hidden = v !== 'SpecificLibraries';
+            $('#mvPickBox').hidden = v !== 'HandPicked';
+            if (v === 'HandPicked') { ensureBrowser(); }
+        });
+        $('#mvTargetMode').addEventListener('change', updateTargetFields);
+        $('#mvTplRecur').addEventListener('change', function () { $('#mvTplFirstBox').hidden = $('#mvTplRecur').value === 'None'; });
         $('#mvKeep').addEventListener('change', function () { $('#mvKeepCountBox').hidden = !$('#mvKeep').checked; });
 
         function renderPicker(listSel, store, results) {
@@ -571,7 +694,7 @@
 
         function buildRequest() {
             return {
-                deadlineLocal: $('#mvDeadline').value,
+                deadline: deadlinePicker ? deadlinePicker.spec() : null,
                 settings: {
                     title: $('#mvTitle').value.trim(),
                     description: $('#mvDesc').value.trim() || null,
@@ -579,7 +702,11 @@
                     eligibleUserIds: checkedValues('#mvUserList'),
                     scope: $('#mvScope').value,
                     libraryIds: checkedValues('#mvLibList'),
-                    handPickedItemIds: Object.keys(data.picked),
+                    handPickedItemIds: pickedIds(),
+                    targetMode: $('#mvTargetMode').value,
+                    targetDrive: $('#mvTargetMode').value === 'FixedCount' ? null : $('#mvTargetDrive').value,
+                    targetValue: parseFloat($('#mvTargetValue').value) || 0,
+                    templateId: data.templateId || null,
                     filterNeverWatched: $('#mvNever').checked,
                     filterNotWatchedMonths: num('#mvNotMonths'),
                     filterLargestCount: num('#mvLargest'),
@@ -630,13 +757,16 @@
             e.preventDefault();
             var req = buildRequest();
             if (req.settings.outcome === 'DeleteViaArr' && !req.settings.deleteConfirmed) { msg('Tick the confirmation box to use "Delete via Sonarr/Radarr".', true); return; }
+            if (deadlinePicker && !deadlinePicker.ok()) { msg(deadlinePicker.error() || 'Choose a valid deadline.', true); return; }
             loading(true);
             api('POST', 'Sessions', req).then(function (res) {
                 if (!res || res.ok === false) { msg((res && res.errors) || 'Could not create the vote.', true); return; }
                 msg('Vote created. Users will see the banner on their home page.');
                 $('#mvNewForm').reset();
                 data.picked = {}; renderPicked();
-                $('#mvDeadline').value = data.overview ? data.overview.defaultDeadlineInput : '';
+                data.templateId = null;
+                if (adminBrowser) { adminBrowser.setSelection([]); }
+                updateTargetFields();
                 showTab('votes');
             }, fail).then(function () { loading(false); });
         });
@@ -709,6 +839,10 @@
                 $('#sSection').checked = s.enableHomeSection; $('#sStandalone').checked = s.enableStandalonePage;
                 $('#sTz').value = s.timeZoneId; $('#sSoon').value = s.closingSoonHours; $('#sResultDays').value = s.resultBannerDays; $('#sPlayback').checked = s.usePlaybackReporting;
                 $('#sHookUrl').value = s.webhookUrl; $('#sHookKind').value = s.webhookKind; $('#sHookOpen').checked = s.webhookOnOpened; $('#sHookSoon').checked = s.webhookOnClosingSoon; $('#sHookResults').checked = s.webhookOnResults;
+                $('#sHookApproval').checked = s.webhookOnApproval; $('#sHookNonVoters').checked = s.webhookIncludeNonVoters;
+                $('#sApproval').checked = s.requireApprovalForDeletes; $('#sAutoApprove').value = s.autoApproveHours; $('#sSeerrPublic').value = s.jellyseerrPublicUrl || '';
+                $('#sWatch').value = s.watchDetailsForVoters || 'NamesAndTime'; $('#sWarn').value = s.driveWarnPercent; $('#sCrit').value = s.driveCriticalPercent;
+                loadDrivesSettings();
                 renderArr(s);
                 data.protItems = {};
                 s.protectedItemIds.forEach(function (id) { data.protItems[id] = { id: id, name: (s.protectedItemNames && s.protectedItemNames[id]) || id }; });
@@ -825,6 +959,15 @@
                 webhookOnClosingSoon: $('#sHookSoon').checked, webhookOnResults: $('#sHookResults').checked, publicServerUrl: s.publicServerUrl || ''
             };
             body.arrInstances = (data.arrRows || []).map(function (r) { return r.read(); });
+            body.requireApprovalForDeletes = $('#sApproval').checked;
+            body.autoApproveHours = num('#sAutoApprove');
+            body.jellyseerrPublicUrl = $('#sSeerrPublic').value;
+            body.webhookOnApproval = $('#sHookApproval').checked;
+            body.webhookIncludeNonVoters = $('#sHookNonVoters').checked;
+            body.watchDetailsForVoters = $('#sWatch').value;
+            body.driveWarnPercent = num('#sWarn') || 85;
+            body.driveCriticalPercent = num('#sCrit') || 95;
+            body.driveNames = Array.prototype.map.call(page.querySelectorAll('#sDrives input[data-mount]'), function (i) { return { mountPoint: i.getAttribute('data-mount'), name: i.value.trim() }; });
             body.radarrAddImportExclusion = $('#sRadarrEx') ? $('#sRadarrEx').checked : true;
             body.sonarrAddImportListExclusion = $('#sSonarrEx') ? $('#sSonarrEx').checked : true;
             body.jellyseerrAction = $('#sSeerrAction') ? $('#sSeerrAction').value : 'Nothing';
@@ -966,6 +1109,312 @@
                 h('p', { text: 'Emergency switch-off: create the file ' + (o.killSwitch && o.killSwitch.path ? o.killSwitch.path : o.dataDirectory + '/DISABLE') + ' and restart Jellyfin.' }),
                 h('p', { className: 'mv-muted', text: 'Standalone voting page: ' + ApiClient.getUrl('MediaVote/vote') })
             ]));
+        }
+
+        // ---------------- deadline picker (create and extend). The server does all time zone maths.
+        var deadlineMemory = null;
+        function DeadlinePicker(host, opts) {
+            opts = opts || {};
+            var KEY = 'mediavote-deadline-choice';
+            var spec = null;
+            if (opts.remember !== false) {
+                try { spec = JSON.parse(window.localStorage.getItem(KEY) || 'null'); } catch (e) { spec = null; }
+                spec = spec || deadlineMemory;
+            }
+            if (!spec || !spec.kind) { spec = { kind: 'Relative', amount: 7, unit: 'days', time: '20:00' }; }
+            if (opts.exact) { spec = { kind: 'Exact', local: opts.exact }; }
+            var last = { ok: false, error: null };
+            var chips = [['in1h', 'In 1 hour'], ['tonight', 'Tonight at 20:00'], ['tomorrow', 'Tomorrow at 20:00'], ['in3d', 'In 3 days'], ['in1w', 'In 1 week'], ['in2w', 'In 2 weeks'], ['endofmonth', 'End of this month']];
+            var chipRow = h('div', { className: 'mv-chips', role: 'group', 'aria-label': 'Quick deadline' });
+            var amount = h('input', { type: 'number', min: '1', max: '365', inputmode: 'numeric', 'aria-label': 'How many' });
+            var unit = h('select', { 'aria-label': 'Unit' }, [h('option', { value: 'hours', text: 'hours' }), h('option', { value: 'days', text: 'days' }), h('option', { value: 'weeks', text: 'weeks' })]);
+            var atLabel = h('span', { text: 'at' });
+            var time = h('input', { type: 'time', step: '60', 'aria-label': 'Time (24-hour)' });
+            var flexRow = h('div', { className: 'mv-inline' }, [h('span', { text: 'In' }), amount, unit, atLabel, time]);
+            var exact = h('input', { type: 'datetime-local', 'aria-label': 'Exact date and time' });
+            var exactRow = h('div', { className: 'mv-inline' }, [h('span', { text: 'Or exactly:' }), exact]);
+            var result = h('p', { className: 'mv-deadline-result', role: 'status', 'aria-live': 'polite' });
+            chips.forEach(function (c) {
+                chipRow.appendChild(h('button', { type: 'button', className: 'raised emby-button', 'data-preset': c[0], text: c[1], onclick: function () { set({ kind: 'Preset', preset: c[0] }); } }));
+            });
+            host.appendChild(chipRow);
+            host.appendChild(flexRow);
+            host.appendChild(exactRow);
+            host.appendChild(result);
+
+            function sync() {
+                Array.prototype.forEach.call(chipRow.querySelectorAll('button'), function (b) { b.setAttribute('aria-pressed', spec.kind === 'Preset' && spec.preset === b.getAttribute('data-preset') ? 'true' : 'false'); });
+                if (spec.kind === 'Relative') { amount.value = spec.amount; unit.value = spec.unit; time.value = spec.time || '20:00'; }
+                else if (!amount.value) { amount.value = 7; unit.value = 'days'; time.value = '20:00'; }
+                var hours = unit.value === 'hours';
+                time.hidden = hours; atLabel.hidden = hours;
+                if (spec.kind === 'Exact' && spec.local) { exact.value = spec.local; }
+            }
+            var timer = null;
+            function preview() {
+                clearTimeout(timer);
+                timer = setTimeout(function () {
+                    api('POST', 'Deadline', spec).then(function (r) {
+                        last = { ok: !!r.ok, error: r.error };
+                        result.textContent = r.ok ? r.description : r.error;
+                        result.className = 'mv-deadline-result' + (r.ok ? '' : ' mv-error');
+                        if (r.ok && spec.kind !== 'Exact') { exact.value = r.localInput; }
+                    }, function (e) { last = { ok: false, error: e.message }; result.textContent = e.message; result.className = 'mv-deadline-result mv-error'; });
+                }, 200);
+            }
+            function set(next) {
+                spec = next;
+                if (opts.remember !== false) {
+                    deadlineMemory = spec;
+                    try { window.localStorage.setItem(KEY, JSON.stringify(spec)); } catch (e) { /* in-memory fallback */ }
+                }
+                sync();
+                preview();
+            }
+            function fromFlex() { set({ kind: 'Relative', amount: parseInt(amount.value, 10) || 0, unit: unit.value, time: time.value || '20:00' }); }
+            amount.addEventListener('input', fromFlex);
+            unit.addEventListener('change', fromFlex);
+            time.addEventListener('change', fromFlex);
+            exact.addEventListener('change', function () { set({ kind: 'Exact', local: exact.value }); });
+            sync();
+            preview();
+            return {
+                spec: function () { return spec; },
+                ok: function () { return last.ok; },
+                error: function () { return last.error; },
+                set: set,
+                refresh: preview
+            };
+        }
+        var deadlinePicker = DeadlinePicker($('#mvDeadlinePicker'));
+
+        // ---------------- hand-picked titles: the shared media browser (same component as the voting views)
+        var adminBrowser = null;
+        var browserLoading = null;
+        function ensureBrowser() {
+            if (adminBrowser || browserLoading) { return; }
+            var host = $('#mvBrowser');
+            host.innerHTML = '';
+            host.appendChild(h('p', { className: 'mv-muted', text: 'Loading the media browser…' }));
+            browserLoading = new Promise(function (resolve) {
+                if (window.MediaVote && window.MediaVote.AdminBrowser) { resolve(); return; }
+                var sc = document.createElement('script');
+                sc.src = ApiClient.getUrl('MediaVote/client.js') + '?lib=1';
+                sc.onload = function () { resolve(); };
+                sc.onerror = function () { resolve(); };
+                document.head.appendChild(sc);
+                setTimeout(resolve, 8000);
+            }).then(function () {
+                browserLoading = null;
+                host.innerHTML = '';
+                if (!(window.MediaVote && window.MediaVote.AdminBrowser)) {
+                    $('#mvPickFallback').hidden = false;
+                    return;
+                }
+                adminBrowser = window.MediaVote.AdminBrowser(host, { toast: function (t, err) { msg(t, err); } });
+                adminBrowser.reload();
+                if (data.pendingSelection) { adminBrowser.setSelection(data.pendingSelection); data.pendingSelection = null; }
+            });
+        }
+        function pickedIds() {
+            if (adminBrowser) { return adminBrowser.selection().map(function (i) { return i.id; }); }
+            return Object.keys(data.picked);
+        }
+
+        // ---------------- free-space target
+        function updateTargetFields() {
+            var mode = $('#mvTargetMode').value;
+            var target = mode !== 'FixedCount';
+            $('#mvTargetDriveBox').hidden = !target;
+            $('#mvTargetValueBox').hidden = !target;
+            $('#mvWinnersLabel').textContent = target ? 'Maximum number of titles (safety limit)' : 'Number of winners to act on (N)';
+            $('#mvTargetValueLabel').textContent = mode === 'BelowPercent' ? 'Target: below … % full' : 'Target: at least … GB free';
+            if (mode === 'BelowPercent' && parseFloat($('#mvTargetValue').value) >= 100) { $('#mvTargetValue').value = 85; }
+        }
+        function loadTargetDrives() {
+            return api('GET', 'Drives').then(function (r) {
+                data.drives = r.drives || [];
+                var sel = $('#mvTargetDrive');
+                var keep = sel.value;
+                sel.innerHTML = '';
+                data.drives.forEach(function (d) { sel.appendChild(h('option', { value: d.key, text: d.name + (d.known ? ' — ' + Math.round(d.usedPercent) + '% full, ' + bytes(d.freeBytes) + ' free' : ' — usage unknown') })); });
+                if (keep) { sel.value = keep; }
+            }, function () { /* the drive list is optional */ });
+        }
+
+        // ---------------- templates
+        function loadTemplates() {
+            return api('GET', 'Templates').then(function (list) {
+                data.templates = list || [];
+                var sel = $('#mvTemplateSelect');
+                var keep = sel.value;
+                sel.innerHTML = '';
+                sel.appendChild(h('option', { value: '', text: data.templates.length ? 'Choose a template' : 'No templates yet' }));
+                data.templates.forEach(function (t) { sel.appendChild(h('option', { value: t.id, text: t.name + (t.recurrence !== 'None' ? ' (' + t.schedule + ')' : '') })); });
+                sel.value = keep;
+            }, function () { /* optional */ });
+        }
+        function applyTemplate(t) {
+            var st = t.settings || {};
+            data.templateId = t.id;
+            $('#mvTitle').value = st.title || '';
+            $('#mvDesc').value = st.description || '';
+            page.querySelector('input[name="mvVoters"][value="' + (st.allUsers === false ? 'some' : 'all') + '"]').checked = true;
+            $('#mvUserPicker').hidden = st.allUsers !== false;
+            Array.prototype.forEach.call(page.querySelectorAll('#mvUserList input'), function (c) { c.checked = (st.eligibleUserIds || []).indexOf(c.value) >= 0; });
+            $('#mvScope').value = st.scope || 'AllLibraries';
+            $('#mvScope').dispatchEvent(new Event('change'));
+            Array.prototype.forEach.call(page.querySelectorAll('#mvLibList input'), function (c) { c.checked = (st.libraryIds || []).indexOf(c.value) >= 0; });
+            data.pendingSelection = (st.handPickedItemIds || []).map(function (id) { return { id: id, name: id, drives: {} }; });
+            if (adminBrowser) { adminBrowser.setSelection(data.pendingSelection); data.pendingSelection = null; }
+            $('#mvNever').checked = !!st.filterNeverWatched;
+            $('#mvNotMonths').value = st.filterNotWatchedMonths || 0;
+            $('#mvLargest').value = st.filterLargestCount || 0;
+            $('#mvVotes').value = st.votesPerUser || 3;
+            $('#mvWinners').value = st.winnerCount || 1;
+            $('#mvTurnout').value = st.minTurnoutPercent || 0;
+            $('#mvMultiple').checked = !!st.allowMultipleVotesPerItem;
+            $('#mvKeep').checked = !!st.allowKeepVotes;
+            $('#mvKeepCountBox').hidden = !st.allowKeepVotes;
+            $('#mvKeepCount').value = st.keepVotesPerUser || 1;
+            $('#mvNames').checked = st.showVoterNames !== false;
+            $('#mvTallies').checked = st.showLiveTallies !== false;
+            $('#mvTie').value = st.tiePolicy || 'FlagForAdmin';
+            $('#mvTargetMode').value = st.targetMode || 'FixedCount';
+            if (st.targetDrive) { $('#mvTargetDrive').value = st.targetDrive; }
+            if (st.targetValue) { $('#mvTargetValue').value = st.targetValue; }
+            updateTargetFields();
+            var outcome = page.querySelector('input[name="mvOutcome"][value="' + (st.outcome === 'DeleteViaArr' ? 'DeleteViaArr' : 'NotifyOnly') + '"]');
+            outcome.checked = true;
+            outcome.dispatchEvent(new Event('change'));
+            $('#mvIncludeUnmanaged').checked = !!st.includeUnmanagedTitles;
+            if (t.deadline) { deadlinePicker.set(t.deadline); }
+            $('#mvTplName').value = t.name;
+            $('#mvTplRecur').value = t.recurrence || 'None';
+            $('#mvTplFirstBox').hidden = $('#mvTplRecur').value === 'None';
+            $('#mvTemplateInfo').textContent = 'Loaded "' + t.name + '". Check everything, tick the confirmation again if needed, then press Create vote.';
+        }
+        $('#mvTemplateUse').addEventListener('click', function () {
+            var t = (data.templates || []).filter(function (x) { return x.id === $('#mvTemplateSelect').value; })[0];
+            if (t) { applyTemplate(t); }
+        });
+        $('#mvTemplateDelete').addEventListener('click', function () {
+            var id = $('#mvTemplateSelect').value;
+            if (!id) { return; }
+            confirmBox($('#mvTemplateBar'), 'Delete this template? Votes already made from it are not affected.', 'Delete', function () {
+                api('DELETE', 'Templates/' + id).then(function () { msg('Template deleted.'); loadTemplates(); }, fail);
+            });
+        });
+        $('#mvTplSave').addEventListener('click', function () {
+            var req = buildRequest();
+            var body = { id: data.templateId, name: $('#mvTplName').value.trim(), settings: req.settings, deadline: req.deadline, recurrence: $('#mvTplRecur').value, firstRunLocal: $('#mvTplFirst').value };
+            api('POST', 'Templates', body).then(function (r) {
+                if (r && r.ok === false) { msg(r.errors, true); return; }
+                data.templateId = r.id;
+                msg('Template saved.');
+                loadTemplates();
+            }, fail);
+        });
+
+        // ---------------- alerts on the Votes tab (approval needed, recurring drafts)
+        function renderAlerts(o) {
+            var box = $('#mvAlerts');
+            box.innerHTML = '';
+            (o.awaitingApproval || []).forEach(function (a) {
+                box.appendChild(h('div', { className: 'mv-warn', role: 'alert' }, [
+                    h('strong', { text: '“' + a.title + '” is waiting for your approval: ' }),
+                    h('span', { text: a.count + ' title(s), ' + bytes(a.bytes) + '. Nothing is removed until you approve.' + (a.dueLocal ? ' Auto-approve: ' + a.dueLocal + '.' : '') }),
+                    h('div', { className: 'mv-row' }, [btn('Review', function () { showDetail(a.id); }, true)])
+                ]));
+            });
+            (o.pendingDrafts || []).forEach(function (d) {
+                var row = h('div', { className: 'mv-warn' }, [h('strong', { text: 'Recurring vote “' + d.name + '” is ready to review (since ' + d.sinceLocal + '). It does not open by itself.' })]);
+                row.appendChild(h('div', { className: 'mv-row' }, [
+                    btn('Review and open', function () {
+                        loadTemplates().then(function () {
+                            var t = (data.templates || []).filter(function (x) { return x.id === d.id; })[0];
+                            showTab('new');
+                            if (t) { $('#mvTemplateSelect').value = t.id; applyTemplate(t); }
+                        });
+                    }, true),
+                    btn('Skip this time', function () { api('POST', 'Templates/' + d.id + '/Skip').then(function () { msg('Skipped.'); loadOverview(); }, fail); })
+                ]));
+                box.appendChild(row);
+            });
+        }
+
+        // ---------------- storage overview
+        function bar(percent, level) {
+            return h('span', { className: 'mv-level-' + String(level || '').toLowerCase() }, [h('span', { className: 'mv-bar', role: 'img', 'aria-label': Math.round(percent) + '% full' }, [h('span', { style: 'width:' + Math.min(100, Math.max(0, percent)) + '%' })])]);
+        }
+        function loadStorage() {
+            var box = $('#mvStorage');
+            box.innerHTML = '';
+            box.appendChild(h('p', { className: 'mv-muted', text: 'Loading…' }));
+            api('GET', 'Storage').then(function (r) {
+                box.innerHTML = '';
+                if (!r.drives.length) { box.appendChild(h('div', { className: 'mv-card' }, [h('p', { text: 'No drives detected (drive detection needs Linux /proc/self/mountinfo).' })])); }
+                r.drives.forEach(function (x) {
+                    var d = x.drive;
+                    var card = h('div', { className: 'mv-card' }, [h('h3', { text: d.name })]);
+                    card.appendChild(h('p', {}, [bar(d.usedPercent, d.level), ' ' + (d.known ? Math.round(d.usedPercent) + '% full · ' + bytes(d.usedBytes) + ' used · ' + bytes(d.freeBytes) + ' free · ' + bytes(d.totalBytes) + ' total' : 'usage unknown')]));
+                    card.appendChild(h('p', { className: 'mv-muted', text: d.mountPoints.join(', ') + (d.fsType ? ' · ' + d.fsType : '') }));
+                    if (d.sharedWarning) { card.appendChild(h('p', { className: 'mv-warn', text: d.sharedWarning })); }
+                    if (x.libraries.length) {
+                        card.appendChild(table(['Largest libraries here', 'Size', 'Titles'], x.libraries.map(function (l) { return [l.name, bytes(l.bytes), String(l.titles)]; })));
+                    }
+                    box.appendChild(card);
+                });
+                var ov = r.openVote;
+                var vote = h('div', { className: 'mv-card' }, [h('h3', { text: 'Effect of the open vote' })]);
+                if (!ov) { vote.appendChild(h('p', { text: 'No vote is open.' })); }
+                else {
+                    vote.appendChild(h('p', { text: '“' + ov.title + '”: the current top ' + ov.winners + ' title(s)' + (ov.titles.length ? ' (' + ov.titles.slice(0, 10).join(', ') + (ov.titles.length > 10 ? '…' : '') + ')' : '') + ':' }));
+                    if (!ov.projections.length) { vote.appendChild(h('p', { className: 'mv-muted', text: 'Nothing would be freed yet (no title has a positive score, or drive usage is unknown).' })); }
+                    ov.projections.forEach(function (p) { vote.appendChild(h('p', { text: 'Removing them ' + p.text + '.' })); });
+                    (ov.notes || []).forEach(function (n) { vote.appendChild(h('p', { className: 'mv-muted', text: n })); });
+                }
+                box.appendChild(vote);
+            }, function (e) { box.innerHTML = ''; box.appendChild(h('div', { className: 'mv-warn', role: 'alert' }, [h('div', { text: 'Could not load storage: ' + e.message }), btn('Retry', loadStorage)])); });
+        }
+
+        // ---------------- history and statistics
+        function loadStats() {
+            var box = $('#mvStats');
+            box.innerHTML = '';
+            box.appendChild(h('p', { className: 'mv-muted', text: 'Loading…' }));
+            api('GET', 'Stats').then(function (r) {
+                box.innerHTML = '';
+                var sum = h('div', { className: 'mv-card' }, [h('h3', { text: 'Space freed: ' + bytes(r.totalFreedBytes) + ' in ' + r.sessions.length + ' resolved vote(s)' })]);
+                var max = r.sessions.reduce(function (m, x) { return Math.max(m, x.cumulativeFreedBytes); }, 0) || 1;
+                r.sessions.forEach(function (x) {
+                    sum.appendChild(h('div', { className: 'mv-row', style: 'margin:.2em 0' }, [
+                        h('span', { style: 'flex:0 0 10em', className: 'mv-muted', text: x.resolvedLocal }),
+                        h('div', { className: 'mv-hbar', style: 'width:' + Math.max(1, Math.round(60 * x.cumulativeFreedBytes / max)) + '%', 'aria-hidden': 'true' }),
+                        h('span', { text: bytes(x.cumulativeFreedBytes) + ' total (+' + bytes(x.freedBytes) + ')' })
+                    ]));
+                });
+                box.appendChild(sum);
+                box.appendChild(h('div', { className: 'mv-card' }, [h('h3', { text: 'Votes' }), table(['Closed', 'Title', 'Turnout', 'Removed', 'Freed'], r.sessions.slice().reverse().map(function (x) { return [x.resolvedLocal, x.title, x.voters + '/' + x.eligible + ' (' + x.turnoutPercent + '%)', String(x.removed), bytes(x.freedBytes)]; }))]));
+                box.appendChild(h('div', { className: 'mv-card' }, [h('h3', { text: 'Most-voted titles' }), table(['Title', 'Remove votes', 'All votes', 'In votes'], r.mostVoted.map(function (t) { return [t.name, String(t.removeVotes), String(t.votes), String(t.sessions)]; }))]));
+                box.appendChild(h('div', { className: 'mv-card' }, [h('h3', { text: 'Participation' }), table(['User', 'Took part', 'Votes cast', 'Participation'], r.participation.map(function (u) { return [u.name, u.sessionsVoted + ' of ' + u.sessionsEligible, String(u.votesCast), u.participationPercent + '%']; }))]));
+            }, function (e) { box.innerHTML = ''; box.appendChild(h('div', { className: 'mv-warn', role: 'alert' }, [h('div', { text: 'Could not load the history: ' + e.message }), btn('Retry', loadStats)])); });
+        }
+
+        // ---------------- settings: drives table
+        function loadDrivesSettings() {
+            var box = $('#sDrives');
+            return api('GET', 'Drives').then(function (r) {
+                box.innerHTML = '';
+                var names = {};
+                ((data.settings && data.settings.driveNames) || []).forEach(function (n) { names[n.mountPoint] = n.name; });
+                if (!r.drives.length) { box.appendChild(h('p', { className: 'mv-muted', text: 'No drives detected.' })); return; }
+                var rows = r.drives.map(function (d) {
+                    var input = h('input', { value: names[d.key] || d.name, 'data-mount': d.key, 'aria-label': 'Name for ' + d.key, maxlength: '60' });
+                    return [h('div', { className: 'mv-inline' }, [input]), d.mountPoints.join(', ') + (d.fsType ? ' · ' + d.fsType : ''), d.known ? bytes(d.totalBytes) : 'unknown', h('span', {}, [bar(d.usedPercent, d.level), ' ' + (d.known ? Math.round(d.usedPercent) + '%' : '')]), d.sharedWarning || ''];
+                });
+                box.appendChild(table(['Name', 'Mount points', 'Size', 'Used', 'Note'], rows));
+            }, function (e) { box.innerHTML = ''; box.appendChild(h('p', { className: 'mv-warn', text: 'Could not detect drives: ' + e.message })); });
         }
 
         // ---------------- audit

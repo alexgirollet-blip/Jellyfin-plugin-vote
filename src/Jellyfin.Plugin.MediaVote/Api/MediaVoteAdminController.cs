@@ -20,17 +20,24 @@ using Microsoft.AspNetCore.Mvc;
 
 namespace Jellyfin.Plugin.MediaVote.Api;
 
-/// <summary>Create-vote request: settings plus the deadline as local wall-clock text ("yyyy-MM-ddTHH:mm").</summary>
+/// <summary>
+/// Create-vote request: settings plus the deadline, either as a picker choice (<see cref="Deadline"/>, preferred)
+/// or as local wall-clock text ("yyyy-MM-ddTHH:mm"). The server always does the time zone maths.
+/// </summary>
 public sealed class CreateSessionRequest
 {
     public SessionSettings Settings { get; set; } = new();
 
+    public DeadlineSpec? Deadline { get; set; }
+
     public string DeadlineLocal { get; set; } = string.Empty;
 }
 
-/// <summary>Extend request.</summary>
+/// <summary>Extend request (same deadline forms as <see cref="CreateSessionRequest"/>).</summary>
 public sealed class ExtendRequest
 {
+    public DeadlineSpec? Deadline { get; set; }
+
     public string DeadlineLocal { get; set; } = string.Empty;
 }
 
@@ -125,6 +132,41 @@ public sealed class SettingsDto
     public bool WebhookOnResults { get; set; }
 
     public string PublicServerUrl { get; set; } = string.Empty;
+
+    public bool RequireApprovalForDeletes { get; set; } = true;
+
+    public int AutoApproveHours { get; set; }
+
+    public string JellyseerrPublicUrl { get; set; } = string.Empty;
+
+    public bool WebhookOnApproval { get; set; } = true;
+
+    public bool WebhookIncludeNonVoters { get; set; } = true;
+
+    public List<DriveNameConfig> DriveNames { get; set; } = new();
+
+    public int DriveWarnPercent { get; set; } = 85;
+
+    public int DriveCriticalPercent { get; set; } = 95;
+
+    public WatchVisibility WatchDetailsForVoters { get; set; }
+}
+
+/// <summary>Template save request.</summary>
+public sealed class TemplateRequest
+{
+    public string? Id { get; set; }
+
+    public string Name { get; set; } = string.Empty;
+
+    public SessionSettings Settings { get; set; } = new();
+
+    public DeadlineSpec Deadline { get; set; } = DeadlineSpec.Default;
+
+    public RecurrenceKind Recurrence { get; set; }
+
+    /// <summary>First draft time for a recurring template ("yyyy-MM-ddTHH:mm", local).</summary>
+    public string? FirstRunLocal { get; set; }
 }
 
 /// <summary>Admin-only endpoints (RequiresElevation = Jellyfin administrator).</summary>
@@ -149,6 +191,8 @@ public sealed class MediaVoteAdminController : MediaVoteControllerBase
     private readonly ILibraryManager _library;
     private readonly ApiSelfCheck _selfCheck;
     private readonly ArrLibraryCache _arrCache;
+    private readonly DriveService _drives;
+    private readonly ITemplateStore _templates;
     private readonly Microsoft.Extensions.Logging.ILogger<MediaVoteAdminController> _logger;
 
     public MediaVoteAdminController(
@@ -163,9 +207,13 @@ public sealed class MediaVoteAdminController : MediaVoteControllerBase
         ILibraryManager library,
         ApiSelfCheck selfCheck,
         ArrLibraryCache arrCache,
+        DriveService drives,
+        ITemplateStore templates,
         Microsoft.Extensions.Logging.ILogger<MediaVoteAdminController> logger)
     {
+        _templates = templates;
         _arrCache = arrCache;
+        _drives = drives;
         _selfCheck = selfCheck;
         _logger = logger;
         _paths = paths;
@@ -238,6 +286,17 @@ public sealed class MediaVoteAdminController : MediaVoteControllerBase
             integrations = _registrar.Status,
             processUser = PermissionProbe.DescribeProcessUser(),
             maxRemovalsPerVote = Config.MaxRemovalsPerVote,
+            requireApproval = Config.RequireApprovalForDeletes,
+            awaitingApproval = _votes.AwaitingApproval().Select(a => new
+            {
+                id = a.Id,
+                title = a.Settings.Title,
+                count = a.Result!.PlannedItemIds.Count,
+                bytes = a.Result.Items.Where(i => a.Result.PlannedItemIds.Contains(i.ItemId)).Sum(i => i.ArrSizeOnDisk > 0 ? i.ArrSizeOnDisk : i.SizeBytes),
+                dueUtc = a.Result.ApprovalDueUtc,
+                dueLocal = a.Result.ApprovalDueUtc is { } due ? LocalText(due, zone) : null
+            }),
+            pendingDrafts = _templates.GetAll().Where(t => t.DraftPendingSinceUtc is not null).Select(t => new { id = t.Id, name = t.Name, sinceLocal = LocalText(t.DraftPendingSinceUtc!.Value, zone) }),
             arrInstanceCount = Config.ArrInstances.Count(i => i.Enabled),
             dataDirectory = PluginServiceRegistrator.DataDirectory(_paths),
             openSessionId = _votes.GetOpenSession()?.Id,
@@ -259,6 +318,33 @@ public sealed class MediaVoteAdminController : MediaVoteControllerBase
         Removability.Annotate(found, await _arrCache.GetAsync(HttpContext.RequestAborted).ConfigureAwait(false));
         return Json(found.Select(c => new { id = c.ItemId, name = c.Name, year = c.Year, kind = c.Kind, path = c.Path, removable = c.Removable, removalNote = c.RemovalNote }));
     }
+
+    /// <summary>The shared media browser for hand-picking titles: filtered, sorted and paged on the server.</summary>
+    [HttpGet("Browse")]
+    public async Task<ActionResult> Browse([FromQuery] ItemQuery q)
+    {
+        var scope = await BrowseScopeAsync().ConfigureAwait(false);
+        return Json(ViewBuilder.BuildBrowsePage(scope, CurrentUserId, q ?? new ItemQuery(), SafeDrives(), _votes.Clock.UtcNow));
+    }
+
+    /// <summary>Every title matching the filter (for "select all in current filter"): id, size and bytes per drive.</summary>
+    [HttpGet("Browse/Ids")]
+    public async Task<ActionResult> BrowseIds([FromQuery] ItemQuery q)
+    {
+        var scope = await BrowseScopeAsync().ConfigureAwait(false);
+        var ctx = new BrowseContext { ViewerId = CurrentUserId, NowUtc = _votes.Clock.UtcNow };
+        var list = BrowseEngine.Apply(scope, q ?? new ItemQuery(), ctx).Take(10000).ToList();
+        return Json(new
+        {
+            count = list.Count,
+            totalBytes = list.Sum(c => c.SizeBytes),
+            items = list.Select(c => new { id = c.ItemId, name = c.Name, year = c.Year, kind = c.Kind, sizeBytes = c.SizeBytes, drives = c.DriveBytes, removable = c.Removable })
+        });
+    }
+
+    /// <summary>Detected drives with usage (read-only, cached about a minute).</summary>
+    [HttpGet("Drives")]
+    public ActionResult Drives() => Json(new { drives = SafeDrives().Select(DriveView.From), warnPercent = Config.DriveWarnPercent, criticalPercent = Config.DriveCriticalPercent });
 
     [HttpPost("Preview")]
     public async Task<ActionResult> Preview()
@@ -308,7 +394,7 @@ public sealed class MediaVoteAdminController : MediaVoteControllerBase
             return Error(400, "bad_request", "Invalid request body.");
         }
 
-        var (deadline, err) = ParseLocal(req.DeadlineLocal);
+        var (deadline, err) = ResolveDeadline(req.Deadline, req.DeadlineLocal);
         if (deadline is null)
         {
             return Json(new { ok = false, errors = new[] { err } }, 400);
@@ -317,6 +403,8 @@ public sealed class MediaVoteAdminController : MediaVoteControllerBase
         req.Settings.DeadlineUtc = deadline.Value;
         var cfg = Config;
         req.Settings.MaxRemovals = cfg.MaxRemovalsPerVote; // server-side safety cap, never from the browser
+        req.Settings.RequireApproval = req.Settings.Outcome == OutcomeMode.DeleteViaArr && cfg.RequireApprovalForDeletes;
+        req.Settings.AutoApproveHours = req.Settings.RequireApproval ? cfg.AutoApproveHours : 0;
         var (result, session) = await _votes.CreateAsync(
             req.Settings,
             AdminName,
@@ -324,7 +412,158 @@ public sealed class MediaVoteAdminController : MediaVoteControllerBase
             cfg.ProtectedItemIds.ToHashSet(),
             cfg.ProtectedLibraryIds.ToHashSet(StringComparer.OrdinalIgnoreCase),
             cancellationToken).ConfigureAwait(false);
+        if (result.Ok && !string.IsNullOrEmpty(req.Settings.TemplateId) && _templates.GetAll().FirstOrDefault(t => t.Id == req.Settings.TemplateId) is { DraftPendingSinceUtc: not null } tpl)
+        {
+            tpl.DraftPendingSinceUtc = null; // the recurring draft has been reviewed and opened
+            _templates.Save(tpl);
+        }
+
         return result.Ok ? Json(new { ok = true, id = session!.Id }) : Json(new { ok = false, errors = result.Errors }, 400);
+    }
+
+    /// <summary>Approve a prepared "Delete via Sonarr/Radarr" list.</summary>
+    [HttpPost("Sessions/{id}/Approve")]
+    public async Task<ActionResult> Approve([FromRoute] Guid id, CancellationToken cancellationToken)
+        => Op(_votes.Get(id) is null ? OpResult.Fail(VoteErrors.SessionNotFound) : await _votes.ApproveAsync(id, AdminName, cancellationToken).ConfigureAwait(false));
+
+    /// <summary>Reject a prepared list: nothing is removed.</summary>
+    [HttpPost("Sessions/{id}/Reject")]
+    public ActionResult Reject([FromRoute] Guid id) => Op(_votes.Get(id) is null ? OpResult.Fail(VoteErrors.SessionNotFound) : _votes.Reject(id, AdminName));
+
+    // ------------------------------------------------------------------ templates, history, storage
+
+    [HttpGet("Templates")]
+    public ActionResult Templates()
+        => Json(_templates.GetAll().OrderBy(t => t.Name, StringComparer.OrdinalIgnoreCase).Select(t => new
+        {
+            t.Id,
+            t.Name,
+            t.Settings,
+            t.Deadline,
+            t.Recurrence,
+            t.NextRunLocal,
+            schedule = TemplateSchedule.Describe(t),
+            draftPending = t.DraftPendingSinceUtc is not null
+        }));
+
+    [HttpPost("Templates")]
+    public async Task<ActionResult> SaveTemplate()
+    {
+        var req = await ReadBodyAsync<TemplateRequest>().ConfigureAwait(false);
+        if (req is null || string.IsNullOrWhiteSpace(req.Name) || req.Name.Length > 100)
+        {
+            return Json(new { ok = false, errors = new[] { "Give the template a name (up to 100 characters)." } }, 400);
+        }
+
+        var existing = _templates.GetAll().FirstOrDefault(t => t.Id == req.Id);
+        var t = existing ?? new VoteTemplate { CreatedBy = AdminName };
+        t.Name = req.Name.Trim();
+        req.Settings.DeleteConfirmed = false; // the confirmation is always given again when a vote is opened
+        req.Settings.TemplateId = t.Id;
+        t.Settings = req.Settings;
+        t.Deadline = req.Deadline ?? DeadlineSpec.Default;
+        t.Recurrence = req.Recurrence;
+        t.UpdatedUtc = _votes.Clock.UtcNow;
+        if (t.Recurrence != RecurrenceKind.None)
+        {
+            if (string.IsNullOrWhiteSpace(req.FirstRunLocal)
+                || !DateTime.TryParseExact(req.FirstRunLocal.Trim(), "yyyy-MM-ddTHH:mm", CultureInfo.InvariantCulture, DateTimeStyles.None, out var first))
+            {
+                return Json(new { ok = false, errors = new[] { "Choose when the first recurring draft should be prepared." } }, 400);
+            }
+
+            t.NextRunLocal = first.ToString("yyyy-MM-ddTHH:mm", CultureInfo.InvariantCulture);
+            t.AnchorDay = first.Day;
+        }
+        else
+        {
+            t.NextRunLocal = null;
+            t.DraftPendingSinceUtc = null;
+        }
+
+        _templates.Save(t);
+        _audit.Write("template_saved", AdminName, null, t.Name + " · " + TemplateSchedule.Describe(t));
+        return Json(new { ok = true, id = t.Id });
+    }
+
+    [HttpDelete("Templates/{id}")]
+    public ActionResult DeleteTemplate([FromRoute] string id)
+    {
+        bool ok = _templates.Delete(id);
+        if (ok)
+        {
+            _audit.Write("template_deleted", AdminName, null, id);
+        }
+
+        return ok ? Json(new { ok = true }) : Error(404, "not_found", "Template not found.");
+    }
+
+    /// <summary>Skip a recurring draft without opening a vote.</summary>
+    [HttpPost("Templates/{id}/Skip")]
+    public ActionResult SkipDraft([FromRoute] string id)
+    {
+        var t = _templates.GetAll().FirstOrDefault(x => x.Id == id);
+        if (t is null)
+        {
+            return Error(404, "not_found", "Template not found.");
+        }
+
+        t.DraftPendingSinceUtc = null;
+        _templates.Save(t);
+        _audit.Write("template_draft_skipped", AdminName, null, t.Name);
+        return Json(new { ok = true });
+    }
+
+    /// <summary>History and statistics (admin only).</summary>
+    [HttpGet("Stats")]
+    public ActionResult Stats()
+    {
+        var users = _users.ListUsers().Where(u => !u.Disabled).ToDictionary(u => u.Id, u => u.Name);
+        var st = Statistics.Build(_votes.All, users);
+        var zone = Zone;
+        return Json(new
+        {
+            totalFreedBytes = st.TotalFreedBytes,
+            sessions = st.Sessions.Select(x => new { x.Id, x.Title, resolvedLocal = LocalText(x.ResolvedUtc, zone), x.ResolvedUtc, x.FreedBytes, x.CumulativeFreedBytes, x.Voters, x.Eligible, x.TurnoutPercent, x.Removed, x.Outcome }),
+            mostVoted = st.MostVoted,
+            participation = st.Participation
+        });
+    }
+
+    /// <summary>Storage overview: every drive, its largest libraries, and what the open vote's current top titles would free.</summary>
+    [HttpGet("Storage")]
+    public ActionResult Storage()
+    {
+        var drives = SafeDrives();
+        var scope = _catalog.GetScopeCached(ScopeCacheAge);
+        var perDrive = drives.Select(d => new
+        {
+            drive = DriveView.From(d),
+            libraries = scope.Where(c => c.DriveBytes.ContainsKey(d.Key))
+                .GroupBy(c => c.LibraryName)
+                .Select(g => new { name = g.Key, bytes = g.Sum(c => c.DriveBytes[d.Key]), titles = g.Count() })
+                .OrderByDescending(x => x.bytes).Take(5).ToList()
+        }).ToList();
+
+        object? openVote = null;
+        var open = _votes.GetOpenSession();
+        if (open is not null)
+        {
+            var ranking = Tally.Count(open);
+            var cands = open.Candidates.ToDictionary(c => c.ItemId);
+            var plan = WinnerPlanner.Plan(open.Settings, ranking, cands, drives);
+            var freed = drives.Select(d => (Drive: d, Bytes: plan.Winners.Sum(w => cands.TryGetValue(w.ItemId, out var c) && c.DriveBytes.TryGetValue(d.Key, out var b) ? b : 0))).Where(x => x.Bytes > 0).ToList();
+            openVote = new
+            {
+                title = open.Settings.Title,
+                winners = plan.Winners.Count,
+                notes = plan.Notes,
+                titles = plan.Winners.Select(w => cands.TryGetValue(w.ItemId, out var c) ? c.Name : w.ItemId.ToString()),
+                projections = freed.Select(x => new { key = x.Drive.Key, name = x.Drive.Name, bytes = x.Bytes, text = DriveMath.Projection(x.Drive, x.Bytes), percentAfter = DriveMath.After(x.Drive, x.Bytes).Percent })
+            };
+        }
+
+        return Json(new { drives = perDrive, openVote, warnPercent = Config.DriveWarnPercent, criticalPercent = Config.DriveCriticalPercent });
     }
 
     [HttpGet("Sessions/{id}")]
@@ -358,7 +597,7 @@ public sealed class MediaVoteAdminController : MediaVoteControllerBase
     public async Task<ActionResult> Extend([FromRoute] Guid id)
     {
         var req = await ReadBodyAsync<ExtendRequest>().ConfigureAwait(false);
-        var (deadline, err) = ParseLocal(req?.DeadlineLocal);
+        var (deadline, err) = ResolveDeadline(req?.Deadline, req?.DeadlineLocal);
         if (deadline is null)
         {
             return Error(400, "bad_deadline", err);
@@ -453,7 +692,16 @@ public sealed class MediaVoteAdminController : MediaVoteControllerBase
             WebhookOnOpened = c.WebhookOnOpened,
             WebhookOnClosingSoon = c.WebhookOnClosingSoon,
             WebhookOnResults = c.WebhookOnResults,
-            PublicServerUrl = c.PublicServerUrl
+            PublicServerUrl = c.PublicServerUrl,
+            RequireApprovalForDeletes = c.RequireApprovalForDeletes,
+            AutoApproveHours = c.AutoApproveHours,
+            JellyseerrPublicUrl = c.JellyseerrPublicUrl,
+            WebhookOnApproval = c.WebhookOnApproval,
+            WebhookIncludeNonVoters = c.WebhookIncludeNonVoters,
+            DriveNames = c.DriveNames.ToList(),
+            DriveWarnPercent = c.DriveWarnPercent,
+            DriveCriticalPercent = c.DriveCriticalPercent,
+            WatchDetailsForVoters = c.WatchDetailsForVoters
         });
     }
 
@@ -528,8 +776,18 @@ public sealed class MediaVoteAdminController : MediaVoteControllerBase
         c.WebhookOnClosingSoon = d.WebhookOnClosingSoon;
         c.WebhookOnResults = d.WebhookOnResults;
         c.PublicServerUrl = (d.PublicServerUrl ?? string.Empty).Trim();
+        c.RequireApprovalForDeletes = d.RequireApprovalForDeletes;
+        c.AutoApproveHours = Math.Clamp(d.AutoApproveHours, 0, 24 * 30);
+        c.JellyseerrPublicUrl = ArrHttp.NormalizeBaseUrl(d.JellyseerrPublicUrl) ?? string.Empty;
+        c.WebhookOnApproval = d.WebhookOnApproval;
+        c.WebhookIncludeNonVoters = d.WebhookIncludeNonVoters;
+        c.DriveNames = (d.DriveNames ?? new List<DriveNameConfig>()).Where(n => !string.IsNullOrWhiteSpace(n.MountPoint)).Select(n => new DriveNameConfig { MountPoint = n.MountPoint.Trim(), Name = (n.Name ?? string.Empty).Trim() }).ToArray();
+        c.DriveWarnPercent = Math.Clamp(d.DriveWarnPercent, 1, 99);
+        c.DriveCriticalPercent = Math.Clamp(d.DriveCriticalPercent, c.DriveWarnPercent, 100);
+        c.WatchDetailsForVoters = d.WatchDetailsForVoters;
         Plugin.Instance.UpdateConfiguration(c);
         _arrCache.Invalidate();
+        _drives.Invalidate();
         _audit.Write("settings_saved", AdminName, null, "entry points: banner=" + c.EnableBanner + " tab=" + c.EnableCustomTab + " page=" + c.EnablePluginPage + " section=" + c.EnableHomeSection + " standalone=" + c.EnableStandalonePage
             + "; instances: " + string.Join(", ", c.ArrInstances.Select(i => i.Kind + " \"" + i.DisplayName + "\"" + (i.Enabled ? string.Empty : " (off)"))) + "; max removals " + c.MaxRemovalsPerVote);
         return Json(new { ok = true });
@@ -629,6 +887,32 @@ public sealed class MediaVoteAdminController : MediaVoteControllerBase
 
     // ------------------------------------------------------------------ helpers
 
+    /// <summary>All votable (unprotected) titles with removability, for the admin browser.</summary>
+    private async Task<List<CandidateItem>> BrowseScopeAsync()
+    {
+        var cfg = Config;
+        var prot = cfg.ProtectedItemIds.ToHashSet();
+        var protLibs = cfg.ProtectedLibraryIds.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var scope = _catalog.GetScopeCached(ScopeCacheAge).Where(c => !prot.Contains(c.ItemId) && !protLibs.Contains(c.LibraryId)).ToList();
+        Removability.Annotate(scope, await _arrCache.GetAsync(HttpContext.RequestAborted).ConfigureAwait(false));
+        return scope;
+    }
+
+    private IReadOnlyList<DriveStat> SafeDrives()
+    {
+        try
+        {
+            return _drives.GetDrives();
+        }
+#pragma warning disable CA1031 // drive bars are informational
+        catch (Exception ex)
+#pragma warning restore CA1031
+        {
+            Microsoft.Extensions.Logging.LoggerExtensions.LogWarning(_logger, ex, "Media Vote: drive detection failed");
+            return Array.Empty<DriveStat>();
+        }
+    }
+
     private string ProtectedName(Guid id)
     {
         try
@@ -655,6 +939,26 @@ public sealed class MediaVoteAdminController : MediaVoteControllerBase
 
     private static string LocalText(DateTime utc, TimeZoneInfo zone)
         => TimeZoneHelper.UtcToLocal(utc, zone).ToString("ddd d MMM yyyy HH:mm", CultureInfo.GetCultureInfo("en-GB"));
+
+    /// <summary>Plain-words preview of a deadline choice ("Closes Friday 24 Oct 2026 at 20:00 BST (in 7 days)").</summary>
+    [HttpPost("Deadline")]
+    public async Task<ActionResult> Deadline()
+    {
+        var spec = await ReadBodyAsync<DeadlineSpec>().ConfigureAwait(false);
+        var r = DeadlineCalculator.Compute(spec, _votes.Clock.UtcNow, Zone);
+        return Json(new { ok = r.Error is null, deadlineUtc = r.Utc, localInput = r.LocalInput, description = r.Description, error = r.Error });
+    }
+
+    private (DateTime? Utc, string? Error) ResolveDeadline(DeadlineSpec? spec, string? local)
+    {
+        if (spec is not null)
+        {
+            var r = DeadlineCalculator.Compute(spec, _votes.Clock.UtcNow, Zone);
+            return (r.Utc, r.Error);
+        }
+
+        return ParseLocal(local);
+    }
 
     private (DateTime? Utc, string? Error) ParseLocal(string? local)
     {
