@@ -141,6 +141,15 @@ public class PluginConfiguration : BasePluginConfiguration
     /// <summary>Most titles one vote may remove through Sonarr/Radarr (safety cap, 1–100).</summary>
     public int MaxRemovalsPerVote { get; set; } = 5;
 
+    /// <summary>"Delete via Sonarr/Radarr": at the deadline prepare the list and wait for the admin's approval (default on).</summary>
+    public bool RequireApprovalForDeletes { get; set; } = true;
+
+    /// <summary>Approve automatically this many hours after the deadline if nobody acted (0 = never, the default).</summary>
+    public int AutoApproveHours { get; set; }
+
+    /// <summary>Public Jellyseerr address for "request it again" links in results (optional; users must be able to open it).</summary>
+    public string JellyseerrPublicUrl { get; set; } = string.Empty;
+
     // ---------------- drives and title cards ----------------
 
     /// <summary>Friendly drive names set by the admin. Unnamed drives use the defaults (/LM1 = "8TB 1", /LM2 = "8TB 2", /Media = "System drive") or their mount point.</summary>
@@ -190,6 +199,12 @@ public class PluginConfiguration : BasePluginConfiguration
     public bool WebhookOnClosingSoon { get; set; } = true;
 
     public bool WebhookOnResults { get; set; } = true;
+
+    /// <summary>Approval needed / recurring draft ready.</summary>
+    public bool WebhookOnApproval { get; set; } = true;
+
+    /// <summary>Add "Not voted yet: …" to the closing-soon message.</summary>
+    public bool WebhookIncludeNonVoters { get; set; } = true;
 
     /// <summary>Optional public URL of the server, used for links in webhook messages.</summary>
     public string PublicServerUrl { get; set; } = string.Empty;
@@ -263,6 +278,7 @@ public class PluginConfiguration : BasePluginConfiguration
         ArrInstances = (ArrInstances ?? Array.Empty<ArrInstanceConfig>()).Where(i => i is not null).ToArray();
         MaxRemovalsPerVote = Math.Clamp(MaxRemovalsPerVote, 1, 100);
         DriveNames = (DriveNames ?? Array.Empty<DriveNameConfig>()).Where(d => d is not null && !string.IsNullOrWhiteSpace(d.MountPoint)).ToArray();
+        AutoApproveHours = Math.Clamp(AutoApproveHours, 0, 24 * 30);
         DriveWarnPercent = Math.Clamp(DriveWarnPercent, 1, 99);
         DriveCriticalPercent = Math.Clamp(DriveCriticalPercent, DriveWarnPercent, 100);
         return changed;

@@ -139,9 +139,16 @@ public interface INotifier
 {
     Task VoteOpenedAsync(VoteSession session, CancellationToken cancellationToken);
 
-    Task ClosingSoonAsync(VoteSession session, CancellationToken cancellationToken);
+    /// <param name="nonVoters">Eligible users who have not voted yet (for the "who has not voted" reminder).</param>
+    Task ClosingSoonAsync(VoteSession session, IReadOnlyList<string> nonVoters, CancellationToken cancellationToken);
 
     Task ResultsAsync(VoteSession session, CancellationToken cancellationToken);
+
+    /// <summary>A "Delete via Sonarr/Radarr" vote prepared its list and waits for the admin.</summary>
+    Task ApprovalNeededAsync(VoteSession session, CancellationToken cancellationToken);
+
+    /// <summary>A recurring vote template created a draft that waits for the admin to review and open it.</summary>
+    Task DraftReadyAsync(string templateName, CancellationToken cancellationToken);
 }
 
 /// <summary>Persistence for vote sessions.</summary>

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
 using System.Net.Http;
@@ -29,8 +30,53 @@ public sealed class WebhookNotifier : INotifier
     public Task VoteOpenedAsync(VoteSession session, CancellationToken cancellationToken)
         => _config().WebhookOnOpened ? SendAsync("vote_opened", session, $"🗳️ New vote: {session.Settings.Title}", OpenedText(session), cancellationToken) : Task.CompletedTask;
 
-    public Task ClosingSoonAsync(VoteSession session, CancellationToken cancellationToken)
-        => _config().WebhookOnClosingSoon ? SendAsync("vote_closing_soon", session, $"⏰ Vote closing soon: {session.Settings.Title}", $"Voting closes {FormatLocal(session.Settings.DeadlineUtc)}. Have your say!", cancellationToken) : Task.CompletedTask;
+    public Task ClosingSoonAsync(VoteSession session, IReadOnlyList<string> nonVoters, CancellationToken cancellationToken)
+        => _config().WebhookOnClosingSoon ? SendAsync("vote_closing_soon", session, $"⏰ Vote closing soon: {session.Settings.Title}", ClosingText(session, nonVoters, _config().WebhookIncludeNonVoters), cancellationToken) : Task.CompletedTask;
+
+    public Task ApprovalNeededAsync(VoteSession session, CancellationToken cancellationToken)
+        => _config().WebhookOnApproval ? SendAsync("approval_needed", session, $"✋ Approval needed: {session.Settings.Title}", ApprovalText(session), cancellationToken) : Task.CompletedTask;
+
+    public Task DraftReadyAsync(string templateName, CancellationToken cancellationToken)
+        => _config().WebhookOnApproval
+            ? SendAsync("draft_ready", new VoteSession { Settings = new SessionSettings { Title = templateName } }, $"📝 Recurring vote ready: {templateName}", "A recurring vote is ready. Review and open it from Dashboard → Plugins → Media Vote; it does not open by itself.", cancellationToken)
+            : Task.CompletedTask;
+
+    /// <summary>"Closing soon" text, with the "who has not voted yet" reminder when enabled. Public for unit tests.</summary>
+    public static string ClosingText(VoteSession s, IReadOnlyList<string> nonVoters, bool includeNames)
+    {
+        var text = $"Voting closes {FormatLocal(s.Settings.DeadlineUtc)}. Have your say!";
+        if (includeNames && nonVoters.Count > 0)
+        {
+            text += "\nNot voted yet: " + string.Join(", ", nonVoters.Take(30)) + (nonVoters.Count > 30 ? " and " + (nonVoters.Count - 30) + " more" : string.Empty) + ".";
+        }
+
+        return text;
+    }
+
+    /// <summary>"Approval needed" text listing the prepared titles. Public for unit tests.</summary>
+    public static string ApprovalText(VoteSession s)
+    {
+        var r = s.Result;
+        if (r is null)
+        {
+            return "A removal list is waiting for your approval.";
+        }
+
+        var planned = r.Items.Where(i => r.PlannedItemIds.Contains(i.ItemId)).ToList();
+        var sb = new StringBuilder();
+        sb.AppendLine(CultureInfo.InvariantCulture, $"{planned.Count} title(s), {DriveMath.Bytes(planned.Sum(i => i.ArrSizeOnDisk > 0 ? i.ArrSizeOnDisk : i.SizeBytes))}, are ready to be deleted by Sonarr/Radarr. Nothing happens until you approve in Dashboard → Plugins → Media Vote.");
+        foreach (var i in planned.Take(25))
+        {
+            sb.AppendLine(CultureInfo.InvariantCulture, $"• {i.Name} — {DriveMath.Bytes(i.ArrSizeOnDisk > 0 ? i.ArrSizeOnDisk : i.SizeBytes)}");
+        }
+
+        if (r.ApprovalDueUtc is { } due)
+        {
+            sb.AppendLine(CultureInfo.InvariantCulture, $"Approved automatically {FormatLocal(due)} unless you act first.");
+        }
+
+        return sb.ToString();
+    }
 
     public Task ResultsAsync(VoteSession session, CancellationToken cancellationToken)
         => _config().WebhookOnResults ? SendAsync("vote_results", session, $"📋 Vote results: {session.Settings.Title}", ResultsText(session), cancellationToken) : Task.CompletedTask;

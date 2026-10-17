@@ -56,9 +56,25 @@ public sealed class FakeNotifier : INotifier
         return Task.CompletedTask;
     }
 
-    public Task ClosingSoonAsync(VoteSession session, CancellationToken cancellationToken)
+    public List<string> LastNonVoters { get; } = new();
+
+    public Task ClosingSoonAsync(VoteSession session, IReadOnlyList<string> nonVoters, CancellationToken cancellationToken)
     {
         Events.Add("closing");
+        LastNonVoters.Clear();
+        LastNonVoters.AddRange(nonVoters);
+        return Task.CompletedTask;
+    }
+
+    public Task ApprovalNeededAsync(VoteSession session, CancellationToken cancellationToken)
+    {
+        Events.Add("approval");
+        return Task.CompletedTask;
+    }
+
+    public Task DraftReadyAsync(string templateName, CancellationToken cancellationToken)
+    {
+        Events.Add("draft:" + templateName);
         return Task.CompletedTask;
     }
 

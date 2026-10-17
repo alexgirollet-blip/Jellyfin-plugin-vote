@@ -39,6 +39,8 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
             CurrentConfig,
             sp.GetRequiredService<ILoggerFactory>().CreateLogger("MediaVote.Webhook")));
         serviceCollection.AddSingleton<ArrLibraryCache>();
+        serviceCollection.AddSingleton<ITemplateStore>(sp => new JsonTemplateStore(DataDirectory(sp.GetRequiredService<IApplicationPaths>())));
+        serviceCollection.AddSingleton<INotifier>(sp => sp.GetRequiredService<WebhookNotifier>());
         serviceCollection.AddSingleton(sp =>
         {
             var factory = sp.GetRequiredService<ExternalServiceFactory>();
@@ -50,7 +52,8 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
                 sp.GetRequiredService<WebhookNotifier>(),
                 sp.GetRequiredService<FileAuditLog>(),
                 sp.GetRequiredService<IClock>(),
-                () => KillSwitch.IsActive);
+                () => KillSwitch.IsActive,
+                sp.GetRequiredService<DriveService>());
         });
         serviceCollection.AddSingleton<WebInjectionService>();
         serviceCollection.AddSingleton<EntryPointRegistrar>();

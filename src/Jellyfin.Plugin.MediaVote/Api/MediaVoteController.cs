@@ -153,7 +153,17 @@ public sealed class MediaVoteController : MediaVoteControllerBase
                 turnoutPercent = r.TurnoutPercent,
                 turnoutMet = r.TurnoutMet,
                 showBanner = recent && _votes.IsEligible(latest, userId) && !latest.ResultDismissedBy.Contains(userId),
-                items = r.Items.Select(i => new { id = i.ItemId, name = i.Name, kind = i.Kind, score = i.Score, status = PublicStatus(i.Status, r.Outcome) }).ToList()
+                totalFreedBytes = r.TotalBytesFreed,
+                items = r.Items.Select(i => new
+                {
+                    id = i.ItemId,
+                    name = i.Name,
+                    kind = i.Kind,
+                    score = i.Score,
+                    status = PublicStatus(i.Status, r.Outcome),
+                    sizeBytes = i.ArrSizeOnDisk > 0 ? i.ArrSizeOnDisk : i.SizeBytes,
+                    requestUrl = i.Status is ItemOutcomeStatus.Removed or ItemOutcomeStatus.Deleted ? RequestUrl(cfg.JellyseerrPublicUrl, i, latest) : null
+                }).ToList()
             };
         }
 
@@ -234,6 +244,23 @@ public sealed class MediaVoteController : MediaVoteControllerBase
     {
         var r = _votes.DismissResult(id, CurrentUserId);
         return r.Ok ? Json(new { ok = true }) : Error(404, r.Error!);
+    }
+
+    /// <summary>"Request it again" link: {Jellyseerr public URL}/movie/{tmdbId} or /tv/{tmdbId}; null without a URL or TMDb id.</summary>
+    internal static string? RequestUrl(string? publicUrl, ItemOutcome item, VoteSession session)
+    {
+        if (string.IsNullOrWhiteSpace(publicUrl))
+        {
+            return null;
+        }
+
+        var c = session.Candidates.FirstOrDefault(x => x.ItemId == item.ItemId);
+        if (c is null || !c.ProviderIds.TryGetValue("Tmdb", out var tmdb) || !int.TryParse(tmdb, NumberStyles.Integer, CultureInfo.InvariantCulture, out var id) || id <= 0)
+        {
+            return null;
+        }
+
+        return publicUrl.TrimEnd('/') + (item.Kind == MediaKind.Series ? "/tv/" : "/movie/") + id.ToString(CultureInfo.InvariantCulture);
     }
 
     internal static string PublicStatus(ItemOutcomeStatus status, OutcomeMode outcome) => status switch
