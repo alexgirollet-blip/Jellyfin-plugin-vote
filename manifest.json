@@ -8,6 +8,14 @@
     "category": "General",
     "versions": [
       {
+        "version": "1.1.0.0",
+        "changelog": "1.1.0.0. A much easier vote builder. One shared media browser for the admin's hand-pick step and for voters (grid/list; size, drive and its fullness, who watched it last and when, plays, viewers, date added, removable by Sonarr/Radarr; filters, sorts and paging on the server; select all in a filter and a tray with per-drive totals). Deadline picker with quick choices, a flexible \"in N days at HH:MM\" row and a plain-words result worked out by the server (correct across clock changes). Drive detection with usage bars, names and warning levels; Storage and History tabs; free-space target; approval step before Sonarr/Radarr delete anything (on by default, optional auto-approve); presets; tie-break rules; templates and recurring drafts; results with sizes and a \"Request it again\" link; webhook extras. All 1.0.2.0 safety rules are unchanged. Requires Jellyfin 10.11.10.",
+        "targetAbi": "10.11.10.0",
+        "sourceUrl": "https://github.com/alexgirollet-blip/Jellyfin-plugin-vote/releases/download/v1.1.0.0/media-vote_1.1.0.0.zip",
+        "checksum": "29bdc29aed2d8eca94a94b32e7e2e887",
+        "timestamp": "2026-10-17T21:16:37Z"
+      },
+      {
         "version": "1.0.2.0",
         "changelog": "1.0.2.0. Deletion now goes only through Sonarr and Radarr: Media Vote never deletes, moves or changes a media file (Jellyfin cannot write to exFAT drives). \"Delete automatically\" became \"Delete via Sonarr/Radarr\": winners are matched by provider ids, deleted with deleteFiles=true, verified gone, and Jellyfin forgets them once their files are gone. Several Sonarr/Radarr/Jellyseerr instances; titles they do not manage are marked and left out of delete votes by default; read-only dry run with the exact entries and GB; maximum titles per vote; Sonarr/Radarr state on the Status tab. Fixes the vote-results banner coming back after it was closed. Requires Jellyfin 10.11.10.",
         "targetAbi": "10.11.10.0",
