@@ -291,6 +291,10 @@ function check(cond, msg) {
     await page.evaluate(() => { const d = document.createElement('div'); d.className = 'tabContent pageTabContent'; d.innerHTML = '<div data-mediavote-mount="tab">Media Vote is loading. If this stays empty, reload the page.</div>'; document.body.appendChild(d); });
     await page.waitForFunction(() => document.querySelectorAll('[data-mediavote-mounted] .mediavote-card').length > 30, null, { timeout: 5000 });
     check(true, 'mount element that appears late (after re-render) is filled with the voting UI');
+    // Custom Tabs re-renders the tab: the filled element is replaced by a fresh copy of the snippet.
+    await page.evaluate(() => { document.getElementById('customTabMount').innerHTML = '<div data-mediavote-mount="tab">Media Vote is loading. If this stays empty, reload the page.</div>'; });
+    await page.waitForSelector('#customTabMount .mediavote-card', { timeout: 5000 });
+    check(await page.evaluate(() => !/Media Vote is loading/.test(document.getElementById('customTabMount').textContent)), 'a re-rendered tab (fresh snippet) is filled again');
     check(errors.length === 0, 'no console errors (late mount): ' + errors.join(' | '));
     await context.close();
     state.adminPreview = false;

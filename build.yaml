@@ -2,24 +2,24 @@
 # The GitHub release workflow reads guid/name/overview/description/owner/category/targetAbi from here.
 name: "Media Vote"
 guid: "1ffa7b73-334b-4a42-b6c8-0f7b48457bb8"
-version: "1.0.1.0"
+version: "1.0.2.0"
 targetAbi: "10.11.10.0"
 framework: "net9.0"
 overview: "Let your users vote on which movies and shows to remove."
 description: >
   An administrator calls a vote among selected Jellyfin users. Users vote from a banner at the top of
-  their home page, a Vote tab (Custom Tabs) or a sidebar page (Plugin Pages). At the deadline the top N
-  titles are either reported to the admin (default) or deleted from Jellyfin and disk, with the matching
-  Radarr/Sonarr/Jellyseerr entries unmonitored or excluded so nothing is downloaded again.
+  their home page, a Vote tab (Custom Tabs), a sidebar page (Plugin Pages) or a standalone page. At the
+  deadline the top N titles are either reported to the admin (default) or deleted with their files by
+  Sonarr (series) or Radarr (movies). Media Vote itself never deletes or changes a media file.
 category: "General"
 owner: "alexgirollet-blip"
 artifacts:
   - "Jellyfin.Plugin.MediaVote.dll"
 changelog: >
-  1.0.1.0 (safety fix-up). Built for Jellyfin 10.11.10 (1.0.0.0 was built against 10.11.0 and failed with
-  MissingMethodException: IUserManager.Users was removed in 10.11.10). Media Vote no longer writes into
-  Custom Tabs' settings (the 1.0.0.0 Vote tab broke the home page); a read-only check warns about the
-  leftover tab. New safety framework: DISABLE kill-switch file, all optional entry points off by default,
-  preview mode (admins only) until "Go live", failure-proof injection and client script, readable errors,
-  start-up self-check of every Jellyfin API used. If you installed 1.0.0.0: delete its Vote tab in
-  Custom Tabs first (see README).
+  1.0.2.0. Deletion now goes only through Sonarr and Radarr: Media Vote never deletes, moves or changes a
+  media file (Jellyfin cannot write to exFAT drives). "Delete automatically" became "Delete via
+  Sonarr/Radarr": winners are matched by provider ids, deleted with deleteFiles=true, verified gone, and
+  Jellyfin forgets them once their files are gone. Several Sonarr/Radarr/Jellyseerr instances; titles they
+  do not manage are marked and left out of delete votes by default; read-only dry run with the exact
+  entries and GB; maximum titles per vote; Sonarr/Radarr state on the Status tab. Fixes the vote-results
+  banner coming back after it was closed. Requires Jellyfin 10.11.10.

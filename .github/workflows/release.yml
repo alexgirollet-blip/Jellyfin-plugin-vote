@@ -1,6 +1,6 @@
 name: Release
 
-# Push a version tag (e.g. `git tag -a v1.0.0.0 -m "First release" && git push origin v1.0.0.0`).
+# Push a version tag (e.g. `git tag -a v1.0.2.0 -m "Media Vote 1.0.2.0" && git push origin v1.0.2.0`).
 # This builds and tests the plugin, zips the DLL, creates a GitHub Release with the zip,
 # and regenerates manifest.json on the default branch so the plugin repository URL serves it.
 on:
@@ -39,7 +39,15 @@ jobs:
           fi
           if [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then v="$v.0"; fi
           echo "version=$v" >> "$GITHUB_OUTPUT"
-          notes="$(git tag -l --format='%(contents)' "$tag" | sed '/^-----BEGIN PGP/,$d')"
+          # Annotated tag: use its message. Lightweight tag (git shows the commit message instead, e.g. a
+          # merge commit): use the build.yaml changelog.
+          notes=""
+          if [ "$(git cat-file -t "$tag")" = "tag" ]; then
+            notes="$(git tag -l --format='%(contents)' "$tag" | sed '/^-----BEGIN PGP/,$d')"
+          fi
+          if [ -z "$notes" ]; then
+            notes="$(python3 -c "import re;t=open('build.yaml',encoding='utf-8').read();m=re.search(r'^changelog: >\n((?:  .*\n?)+)',t,re.M);print(' '.join(l.strip() for l in m.group(1).splitlines()) if m else '')")"
+          fi
           if [ -z "$notes" ]; then notes="Media Vote $v"; fi
           {
             echo "notes<<MEDIAVOTE_EOF"
@@ -81,8 +89,10 @@ jobs:
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+          NOTES: ${{ steps.ver.outputs.notes }}
         run: |
-          printf '%s\n' "${{ steps.ver.outputs.notes }}" > notes.txt
+          # Notes come through an environment variable: quotes in them must never become shell syntax.
+          printf '%s\n' "$NOTES" > notes.txt
           if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
             # Release already created (e.g. in the GitHub web UI): just attach/replace the zip.
             gh release upload "${GITHUB_REF_NAME}" "${{ steps.pkg.outputs.zip }}" --clobber
@@ -98,10 +108,12 @@ jobs:
           path: manifest-branch
 
       - name: Update manifest.json
+        env:
+          NOTES: ${{ steps.ver.outputs.notes }}
         run: |
           v='${{ steps.ver.outputs.version }}'
           url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/${{ steps.pkg.outputs.name }}"
-          printf '%s\n' "${{ steps.ver.outputs.notes }}" > notes.txt
+          printf '%s\n' "$NOTES" > notes.txt
           python3 .github/scripts/update_manifest.py \
             --manifest manifest-branch/manifest.json \
             --build-yaml build.yaml \
