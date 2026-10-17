@@ -1,0 +1,11 @@
+[
+  {
+    "guid": "1ffa7b73-334b-4a42-b6c8-0f7b48457bb8",
+    "name": "Media Vote",
+    "overview": "Let your users vote on which movies and shows to remove.",
+    "description": "An administrator calls a vote among selected Jellyfin users. Users vote from a banner at the top of their home page, a Vote tab (Custom Tabs) or a sidebar page (Plugin Pages). At the deadline the top N titles are either reported to the admin (default) or deleted from Jellyfin and disk, with the matching Radarr/Sonarr/Jellyseerr entries unmonitored or excluded so nothing is downloaded again.",
+    "owner": "alexgirollet-blip",
+    "category": "General",
+    "versions": []
+  }
+]

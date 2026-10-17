@@ -1,0 +1,59 @@
+name: Build
+
+on:
+  push:
+    branches: ['**']
+    tags-ignore: ['**']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up .NET 9
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Build
+        run: dotnet build -c Release
+
+      - name: Unit tests
+        run: dotnet test -c Release --no-build
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Check client scripts parse
+        run: |
+          node --check src/Jellyfin.Plugin.MediaVote/Assets/client.js
+          python3 - <<'EOF'
+          import re
+          s = open('src/Jellyfin.Plugin.MediaVote/Configuration/configPage.html').read()
+          open('admin.js', 'w').write(re.search(r'<script type="text/javascript">(.*?)</script>', s, re.S).group(1))
+          EOF
+          node --check admin.js
+
+      - name: Client smoke tests (headless Chromium, mocked jellyfin-web)
+        run: |
+          npm install --no-save --no-package-lock playwright@1.56.1
+          npx playwright install --with-deps chromium
+          node tests/client/smoke.js
+          node tests/client/admin-smoke.js
+
+      - name: Package (artifact only, not published)
+        run: |
+          dotnet publish src/Jellyfin.Plugin.MediaVote/Jellyfin.Plugin.MediaVote.csproj -c Release -o publish
+          mkdir -p artifacts && (cd publish && zip -j ../artifacts/media-vote-dev.zip Jellyfin.Plugin.MediaVote.dll)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: media-vote-dev
+          path: artifacts/media-vote-dev.zip

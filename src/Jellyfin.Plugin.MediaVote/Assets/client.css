@@ -1,0 +1,540 @@
+/*
+ * Media Vote styles. Every selector is scoped to a .mediavote-* class or #mediavote-* id:
+ * nothing here restyles Jellyfin or other plugins. Colours come from the active theme at runtime
+ * (client.js copies the page background, text colour and the theme's primary button colour into
+ * --mediavote-* variables), falling back to the browser's system colours.
+ */
+
+.mediavote-banner,
+.mediavote-app,
+.mediavote-overlay {
+    --mediavote-line: rgba(128, 128, 128, 0.35);
+    --mediavote-soft: rgba(128, 128, 128, 0.16);
+    color: var(--mediavote-fg, CanvasText);
+    box-sizing: border-box;
+    font-family: inherit;
+}
+
+.mediavote-banner *,
+.mediavote-app *,
+.mediavote-overlay * {
+    box-sizing: border-box;
+}
+
+.mediavote-sr-only {
+    position: absolute !important;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+}
+
+/* ---------------------------------------------------------------- banner */
+
+.mediavote-banner {
+    position: relative;
+    /* Above Media Bar's slideshow (its slides use z-index up to 10), below Jellyfin's header and dialogs. */
+    z-index: var(--mediavote-banner-z, 11);
+    display: flex;
+    align-items: stretch;
+    gap: 0.25em;
+    margin: 0.75em max(env(safe-area-inset-right), 3.3%) 0.75em max(env(safe-area-inset-left), 3.3%);
+    border-radius: 0.6em;
+    border-left: 0.3em solid var(--mediavote-accent, Highlight);
+    background: var(--mediavote-bg, Canvas);
+    box-shadow: 0 0.2em 0.8em rgba(0, 0, 0, 0.25);
+    overflow: hidden;
+}
+
+.mediavote-banner-main {
+    flex: 1 1 auto;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.5em 0.9em;
+    min-height: 44px;
+    padding: 0.7em 1em;
+    margin: 0;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+}
+
+.mediavote-banner-static {
+    cursor: default;
+}
+
+.mediavote-banner-icon {
+    font-size: 1.8em;
+    color: var(--mediavote-accent, Highlight);
+}
+
+.mediavote-banner-text {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 14em;
+    min-width: 0;
+    gap: 0.15em;
+}
+
+.mediavote-banner-text span {
+    opacity: 0.85;
+    font-size: 0.92em;
+}
+
+.mediavote-banner-cta {
+    display: inline-flex;
+    align-items: center;
+    min-height: 44px;
+    padding: 0 1.2em;
+    margin: 0;
+    border-radius: 0.3em;
+    background: var(--mediavote-accent, Highlight);
+    color: var(--mediavote-accent-fg, HighlightText);
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+/* ---------------------------------------------------------------- shared controls */
+
+.mediavote-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4em;
+    margin: 0.4em 0 0;
+}
+
+.mediavote-chip {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.2em 0.65em;
+    border-radius: 1em;
+    background: var(--mediavote-soft);
+    font-size: 0.85em;
+    white-space: nowrap;
+}
+
+.mediavote-chip-strong {
+    font-weight: 600;
+}
+
+.mediavote-chip-alert {
+    background: transparent;
+    border: 1px solid var(--mediavote-accent, Highlight);
+    color: inherit;
+}
+
+.mediavote-btn {
+    min-height: 44px;
+    min-width: 44px;
+    margin: 0;
+    padding: 0.4em 1em;
+    border-radius: 0.3em;
+    font: inherit;
+    font-size: 0.95em;
+    cursor: pointer;
+    touch-action: manipulation;
+}
+
+.mediavote-btn-primary,
+.mediavote-btn-on {
+    background: var(--mediavote-accent, Highlight);
+    color: var(--mediavote-accent-fg, HighlightText);
+}
+
+.mediavote-btn[aria-pressed="true"]:not(.mediavote-btn-on) {
+    outline: 2px solid var(--mediavote-accent, Highlight);
+    outline-offset: -2px;
+}
+
+.mediavote-icon-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    width: 44px;
+    height: 44px;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+}
+
+.mediavote-input {
+    min-height: 44px;
+    padding: 0.45em 0.7em;
+    border: 1px solid var(--mediavote-line);
+    border-radius: 0.3em;
+    background: var(--mediavote-soft);
+    color: inherit;
+    /* 16px stops iOS from zooming into the field. */
+    font: inherit;
+    font-size: 16px;
+}
+
+.mediavote-input option {
+    color: initial;
+    background: initial;
+}
+
+.mediavote-app :focus-visible,
+.mediavote-banner :focus-visible,
+.mediavote-sheet :focus-visible {
+    outline: 2px solid var(--mediavote-accent, Highlight);
+    outline-offset: 2px;
+}
+
+/* ---------------------------------------------------------------- app layout */
+
+.mediavote-app {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    background: var(--mediavote-bg, Canvas);
+}
+
+.mediavote-mode-page {
+    min-height: 50vh;
+    border-radius: 0.6em;
+    padding-bottom: env(safe-area-inset-bottom);
+}
+
+.mediavote-header {
+    padding: 1em max(env(safe-area-inset-right), 1em) 0.6em max(env(safe-area-inset-left), 1em);
+    background: var(--mediavote-bg, Canvas);
+}
+
+.mediavote-header-top {
+    display: flex;
+    align-items: center;
+    gap: 0.5em;
+}
+
+.mediavote-title {
+    flex: 1 1 auto;
+    margin: 0;
+    font-size: 1.4em;
+    line-height: 1.25;
+}
+
+.mediavote-desc {
+    margin: 0.4em 0 0;
+    white-space: pre-line;
+}
+
+.mediavote-meta {
+    margin: 0.35em 0 0;
+    opacity: 0.8;
+    font-size: 0.9em;
+}
+
+.mediavote-toolbar {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5em;
+    margin-top: 0.8em;
+}
+
+.mediavote-search {
+    width: 100%;
+}
+
+.mediavote-toolbar-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5em;
+}
+
+.mediavote-toolbar-row select {
+    flex: 1 1 9em;
+    min-width: 0;
+}
+
+.mediavote-body {
+    padding: 0.5em max(env(safe-area-inset-right), 1em) 1em max(env(safe-area-inset-left), 1em);
+}
+
+.mediavote-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 22em), 1fr));
+    gap: 0.75em;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.mediavote-card {
+    display: flex;
+    gap: 0.8em;
+    padding: 0.6em;
+    border: 1px solid var(--mediavote-line);
+    border-radius: 0.5em;
+    background: var(--mediavote-soft);
+    min-width: 0;
+}
+
+.mediavote-poster {
+    position: relative;
+    flex: 0 0 5.5em;
+    width: 5.5em;
+    aspect-ratio: 2 / 3;
+    border-radius: 0.3em;
+    overflow: hidden;
+    background: var(--mediavote-soft);
+}
+
+.mediavote-poster img {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.mediavote-poster-fallback {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 2em;
+    opacity: 0.5;
+}
+
+.mediavote-info {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2em;
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.mediavote-card-title {
+    color: inherit;
+    font-weight: 600;
+    text-decoration: none;
+    overflow-wrap: anywhere;
+}
+
+.mediavote-card-title:hover,
+.mediavote-card-title:focus-visible {
+    text-decoration: underline;
+}
+
+.mediavote-facts,
+.mediavote-voters {
+    margin: 0;
+    font-size: 0.85em;
+    opacity: 0.8;
+    overflow-wrap: anywhere;
+}
+
+.mediavote-tally {
+    margin: 0.2em 0 0;
+    font-size: 0.9em;
+    font-weight: 600;
+}
+
+.mediavote-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4em;
+    margin-top: auto;
+    padding-top: 0.4em;
+}
+
+.mediavote-more {
+    display: block;
+    margin: 1em auto 0;
+}
+
+.mediavote-more[hidden] {
+    display: none;
+}
+
+.mediavote-sentinel {
+    height: 1px;
+}
+
+.mediavote-none,
+.mediavote-empty {
+    padding: 1.5em 0.5em;
+    text-align: center;
+    list-style: none;
+}
+
+.mediavote-empty-title {
+    font-size: 1.15em;
+    font-weight: 600;
+}
+
+.mediavote-result {
+    max-width: 40em;
+    margin: 1em auto 0;
+    text-align: left;
+}
+
+.mediavote-result-list {
+    padding-left: 1.2em;
+}
+
+.mediavote-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.8em;
+    padding: 0.6em max(env(safe-area-inset-right), 1em) max(env(safe-area-inset-bottom), 0.6em) max(env(safe-area-inset-left), 1em);
+    border-top: 1px solid var(--mediavote-line);
+    background: var(--mediavote-bg, Canvas);
+}
+
+.mediavote-footer:empty {
+    display: none;
+}
+
+.mediavote-toast {
+    position: sticky;
+    bottom: 4.5em;
+    align-self: center;
+    max-width: 90%;
+    margin: 0.5em auto;
+    padding: 0.7em 1em;
+    border-radius: 0.4em;
+    background: var(--mediavote-fg, CanvasText);
+    color: var(--mediavote-bg, Canvas);
+    z-index: 3;
+}
+
+.mediavote-toast-error {
+    border-left: 0.3em solid var(--mediavote-accent, Highlight);
+}
+
+/* ---------------------------------------------------------------- overlay */
+
+.mediavote-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: var(--mediavote-overlay-z, 10000);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0.6);
+    overscroll-behavior: contain;
+}
+
+.mediavote-mode-overlay {
+    position: relative;
+    width: min(64em, 96vw);
+    height: 92vh;
+    height: min(92dvh, var(--mediavote-vh, 100dvh));
+    border-radius: 0.8em;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+    box-shadow: 0 0.5em 2em rgba(0, 0, 0, 0.5);
+}
+
+.mediavote-mode-overlay .mediavote-header {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    border-bottom: 1px solid var(--mediavote-line);
+}
+
+.mediavote-mode-overlay .mediavote-body {
+    flex: 1 0 auto;
+}
+
+.mediavote-mode-overlay .mediavote-footer {
+    position: sticky;
+    bottom: 0;
+    z-index: 2;
+}
+
+/* Phones (and small iPad split views): full screen, respecting notches and home indicators. */
+@media (max-width: 40em), (max-height: 32em) {
+    .mediavote-mode-overlay {
+        width: 100%;
+        height: 100vh;
+        height: var(--mediavote-vh, 100dvh);
+        border-radius: 0;
+    }
+
+    .mediavote-mode-overlay .mediavote-header {
+        padding-top: max(env(safe-area-inset-top), 0.8em);
+    }
+
+    .mediavote-banner-cta {
+        width: 100%;
+        justify-content: center;
+    }
+}
+
+/* ---------------------------------------------------------------- in-page sheet (confirmations) */
+
+.mediavote-sheet-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: calc(var(--mediavote-overlay-z, 10000) + 1);
+    display: flex;
+    align-items: flex-end;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0.5);
+}
+
+.mediavote-sheet {
+    width: min(30em, 100%);
+    max-height: 85vh;
+    max-height: 85dvh;
+    overflow-y: auto;
+    padding: 1.2em 1.2em max(env(safe-area-inset-bottom), 1.2em);
+    border-radius: 0.8em 0.8em 0 0;
+    background: var(--mediavote-bg, Canvas);
+    color: var(--mediavote-fg, CanvasText);
+}
+
+@media (min-width: 40em) {
+    .mediavote-sheet-backdrop {
+        align-items: center;
+    }
+
+    .mediavote-sheet {
+        border-radius: 0.8em;
+    }
+}
+
+.mediavote-sheet-title {
+    margin: 0 0 0.6em;
+}
+
+.mediavote-sheet-actions {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5em;
+    margin-top: 1em;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+    .mediavote-sheet {
+        animation: mediavote-rise 0.18s ease-out;
+    }
+}
+
+@keyframes mediavote-rise {
+    from {
+        transform: translateY(1.5em);
+        opacity: 0;
+    }
+
+    to {
+        transform: none;
+        opacity: 1;
+    }
+}

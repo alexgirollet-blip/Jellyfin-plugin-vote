@@ -1,0 +1,56 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    JellyfinTarget selects the server line this build is for.
+    10.11 (default): net9.0 + Jellyfin.Controller 10.11.0 (oldest 10.11 package, so the
+    DLL loads on every 10.11.x server).
+    A Jellyfin 12 build can later be produced with -p:JellyfinTarget=12 once tested.
+  -->
+  <PropertyGroup>
+    <JellyfinTarget Condition="'$(JellyfinTarget)' == ''">10.11</JellyfinTarget>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(JellyfinTarget)' == '10.11'">
+    <TargetFramework>net9.0</TargetFramework>
+    <JellyfinPackageVersion>10.11.0</JellyfinPackageVersion>
+    <DefineConstants>$(DefineConstants);JELLYFIN_10_11</DefineConstants>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(JellyfinTarget)' == '12'">
+    <TargetFramework>net10.0</TargetFramework>
+    <JellyfinPackageVersion>12.1.0</JellyfinPackageVersion>
+    <DefineConstants>$(DefineConstants);JELLYFIN_12</DefineConstants>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <RootNamespace>Jellyfin.Plugin.MediaVote</RootNamespace>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <NoWarn>$(NoWarn);CS1591;CS1573</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Jellyfin.Controller" Version="$(JellyfinPackageVersion)">
+      <ExcludeAssets>runtime</ExcludeAssets>
+    </PackageReference>
+    <PackageReference Include="Jellyfin.Model" Version="$(JellyfinPackageVersion)">
+      <ExcludeAssets>runtime</ExcludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Remove="Configuration\*.html" />
+    <None Remove="Assets\*" />
+    <EmbeddedResource Include="Configuration\*.html" />
+    <EmbeddedResource Include="Assets\*" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Jellyfin.Plugin.MediaVote.Tests" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="color-scheme" content="light dark">
+    <title>Media Vote</title>
+    <style>
+        html, body { margin: 0; background: Canvas; color: CanvasText; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+        .mvs-wrap { max-width: 72em; margin: 0 auto; padding: max(env(safe-area-inset-top), 1em) max(env(safe-area-inset-right), 1em) max(env(safe-area-inset-bottom), 1em) max(env(safe-area-inset-left), 1em); }
+        .mvs-top { display: flex; align-items: center; justify-content: space-between; gap: 1em; margin-bottom: 1em; }
+        .mvs-top h1 { margin: 0; font-size: 1.3em; }
+        .mvs-form { max-width: 22em; margin: 3em auto; display: flex; flex-direction: column; gap: 0.8em; }
+        .mvs-form label { display: flex; flex-direction: column; gap: 0.3em; font-weight: 600; }
+        .mvs-form input { min-height: 44px; padding: 0.5em 0.7em; font-size: 16px; border: 1px solid rgba(128,128,128,.5); border-radius: 0.3em; background: transparent; color: inherit; }
+        .mvs-btn { min-height: 44px; padding: 0.5em 1.2em; font: inherit; border-radius: 0.3em; border: 1px solid rgba(128,128,128,.5); background: rgba(128,128,128,.15); color: inherit; cursor: pointer; }
+        .mvs-btn-primary { background: Highlight; color: HighlightText; border-color: Highlight; font-weight: 600; }
+        .mvs-error { color: inherit; border-left: 0.3em solid Highlight; padding: 0.4em 0.8em; background: rgba(128,128,128,.15); }
+        .mvs-error[hidden] { display: none; }
+        .mvs-hint { opacity: .75; font-size: .9em; }
+    </style>
+</head>
+<body>
+    <div class="mvs-wrap">
+        <div class="mvs-top">
+            <h1>Media Vote</h1>
+            <div>
+                <a class="mvs-btn" id="mvs-home" href="../web/">Open Jellyfin</a>
+                <button type="button" class="mvs-btn" id="mvs-logout" hidden>Sign out</button>
+            </div>
+        </div>
+        <form class="mvs-form" id="mvs-login" autocomplete="on" novalidate>
+            <p class="mvs-hint">Sign in with your Jellyfin account to vote.</p>
+            <label>Username <input id="mvs-user" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" required></label>
+            <label>Password <input id="mvs-pass" name="password" type="password" autocomplete="current-password"></label>
+            <div class="mvs-error" id="mvs-error" role="alert" hidden></div>
+            <button type="submit" class="mvs-btn mvs-btn-primary" id="mvs-submit">Sign in</button>
+        </form>
+        <div id="mvs-app"></div>
+    </div>
+    <script>
+        window.__mediavoteStandalone = true;
+        (function () {
+            'use strict';
+            var base = window.location.pathname.replace(/\/mediavote\/vote.*$/i, '');
+            var origin = window.location.origin + base;
+            var state = { token: null, userId: null };
+
+            function store(k, v) { try { if (v === null) { sessionStorage.removeItem(k); } else { sessionStorage.setItem(k, v); } } catch (e) { /* storage may be blocked in web views */ } }
+            function read(k) { try { return sessionStorage.getItem(k); } catch (e) { return null; } }
+            function deviceId() {
+                var id = null;
+                try { id = localStorage.getItem('mediavote-device'); } catch (e) { id = null; }
+                if (!id) {
+                    id = 'mediavote-' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+                    try { localStorage.setItem('mediavote-device', id); } catch (e) { /* not important */ }
+                }
+                return id;
+            }
+
+            var conn = {
+                kind: 'standalone',
+                inApp: false,
+                ready: function () { return !!state.token; },
+                url: function (path) { return origin + '/' + path.replace(/^\//, ''); },
+                token: function () { return state.token; },
+                userKey: function () { return origin + '|' + state.userId; },
+                itemHref: function (id) { return origin + '/web/#/details?id=' + encodeURIComponent(id); },
+                onUnauthorized: function () {
+                    state.token = null;
+                    store('mediavote-token', null);
+                    document.getElementById('mvs-app').innerHTML = '';
+                    document.getElementById('mvs-login').hidden = false;
+                    document.getElementById('mvs-logout').hidden = true;
+                    showError('Your session has expired. Please sign in again.');
+                }
+            };
+
+            document.getElementById('mvs-home').setAttribute('href', origin + '/web/');
+
+            function showError(msg) {
+                var e = document.getElementById('mvs-error');
+                e.textContent = msg;
+                e.hidden = !msg;
+            }
+
+            function startApp() {
+                document.getElementById('mvs-login').hidden = true;
+                document.getElementById('mvs-logout').hidden = false;
+                var container = document.getElementById('mvs-app');
+                container.innerHTML = '';
+                function mount() {
+                    if (window.MediaVote && window.MediaVote.mountStandalone) {
+                        window.MediaVote.mountStandalone(container, conn);
+                    } else {
+                        setTimeout(mount, 100);
+                    }
+                }
+                mount();
+            }
+
+            document.getElementById('mvs-login').addEventListener('submit', function (ev) {
+                ev.preventDefault();
+                showError('');
+                var btn = document.getElementById('mvs-submit');
+                btn.disabled = true;
+                fetch(origin + '/Users/AuthenticateByName', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': 'MediaBrowser Client="Media Vote", Device="Web browser", DeviceId="' + deviceId() + '", Version="1.0.0"'
+                    },
+                    body: JSON.stringify({ Username: document.getElementById('mvs-user').value, Pw: document.getElementById('mvs-pass').value })
+                }).then(function (r) {
+                    if (!r.ok) { throw new Error(r.status === 401 ? 'Wrong username or password.' : 'Sign-in failed (HTTP ' + r.status + ').'); }
+                    return r.json();
+                }).then(function (data) {
+                    state.token = data.AccessToken;
+                    state.userId = data.User && data.User.Id;
+                    store('mediavote-token', state.token);
+                    store('mediavote-user', state.userId);
+                    document.getElementById('mvs-pass').value = '';
+                    startApp();
+                }).catch(function (e) {
+                    showError(e.message && e.message.indexOf('HTTP') === -1 && e.message.indexOf('Wrong') === -1 ? 'Could not reach the server.' : e.message);
+                }).then(function () { btn.disabled = false; });
+            });
+
+            document.getElementById('mvs-logout').addEventListener('click', function () {
+                var token = state.token;
+                state.token = null;
+                store('mediavote-token', null);
+                store('mediavote-user', null);
+                fetch(origin + '/Sessions/Logout', { method: 'POST', headers: { 'Authorization': 'MediaBrowser Token="' + token + '"' } }).catch(function () {});
+                window.location.reload();
+            });
+
+            var saved = read('mediavote-token');
+            if (saved) {
+                state.token = saved;
+                state.userId = read('mediavote-user');
+                startApp();
+            }
+
+            var s = document.createElement('script');
+            s.src = origin + '/MediaVote/client.js';
+            document.head.appendChild(s);
+        })();
+    </script>
+</body>
+</html>
