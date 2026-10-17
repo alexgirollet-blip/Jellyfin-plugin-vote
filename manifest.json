@@ -3,10 +3,18 @@
     "guid": "1ffa7b73-334b-4a42-b6c8-0f7b48457bb8",
     "name": "Media Vote",
     "overview": "Let your users vote on which movies and shows to remove.",
-    "description": "An administrator calls a vote among selected Jellyfin users. Users vote from a banner at the top of their home page, a Vote tab (Custom Tabs) or a sidebar page (Plugin Pages). At the deadline the top N titles are either reported to the admin (default) or deleted from Jellyfin and disk, with the matching Radarr/Sonarr/Jellyseerr entries unmonitored or excluded so nothing is downloaded again.",
+    "description": "An administrator calls a vote among selected Jellyfin users. Users vote from a banner at the top of their home page, a Vote tab (Custom Tabs), a sidebar page (Plugin Pages) or a standalone page. At the deadline the top N titles are either reported to the admin (default) or deleted with their files by Sonarr (series) or Radarr (movies). Media Vote itself never deletes or changes a media file.",
     "owner": "alexgirollet-blip",
     "category": "General",
     "versions": [
+      {
+        "version": "1.0.2.0",
+        "changelog": "1.0.2.0. Deletion now goes only through Sonarr and Radarr: Media Vote never deletes, moves or changes a media file (Jellyfin cannot write to exFAT drives). \"Delete automatically\" became \"Delete via Sonarr/Radarr\": winners are matched by provider ids, deleted with deleteFiles=true, verified gone, and Jellyfin forgets them once their files are gone. Several Sonarr/Radarr/Jellyseerr instances; titles they do not manage are marked and left out of delete votes by default; read-only dry run with the exact entries and GB; maximum titles per vote; Sonarr/Radarr state on the Status tab. Fixes the vote-results banner coming back after it was closed. Requires Jellyfin 10.11.10.",
+        "targetAbi": "10.11.10.0",
+        "sourceUrl": "https://github.com/alexgirollet-blip/Jellyfin-plugin-vote/releases/download/v1.0.2.0/media-vote_1.0.2.0.zip",
+        "checksum": "7778d01d60e784e9b6804ec0dbf0f03d",
+        "timestamp": "2026-10-17T20:32:30Z"
+      },
       {
         "version": "1.0.1.0",
         "changelog": "Merge pull request #2 from alexgirollet-blip/claude/pensive-cannon-0s240p\n\nMedia Vote 1.0.1.0: safety fix-up for Jellyfin 10.11.10",
