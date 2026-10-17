@@ -73,8 +73,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           printf '%s\n' "${{ steps.ver.outputs.notes }}" > notes.txt
-          gh release create "${GITHUB_REF_NAME}" "${{ steps.pkg.outputs.zip }}" \
-            --title "Media Vote ${{ steps.ver.outputs.version }}" --notes-file notes.txt
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            # Release already created (e.g. in the GitHub web UI): just attach/replace the zip.
+            gh release upload "${GITHUB_REF_NAME}" "${{ steps.pkg.outputs.zip }}" --clobber
+          else
+            gh release create "${GITHUB_REF_NAME}" "${{ steps.pkg.outputs.zip }}" \
+              --title "Media Vote ${{ steps.ver.outputs.version }}" --notes-file notes.txt
+          fi
 
       - name: Check out default branch for the manifest
         uses: actions/checkout@v4
