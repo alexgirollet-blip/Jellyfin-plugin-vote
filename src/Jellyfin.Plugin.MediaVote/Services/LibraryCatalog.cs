@@ -35,6 +35,8 @@ public sealed class LibraryCatalog
     private readonly IApplicationPaths _paths;
     private readonly ILogger<LibraryCatalog> _logger;
     private readonly ConcurrentDictionary<(Guid Session, Guid User), (DateTime At, HashSet<Guid> Ids)> _visibleCache = new();
+    private readonly object _scopeLock = new();
+    private (DateTime At, List<CandidateItem> Items)? _scopeCache;
 
     public LibraryCatalog(ILibraryManager libraryManager, IUserManager userManager, IUserDataManager userDataManager, IApplicationPaths paths, ILogger<LibraryCatalog> logger)
     {
@@ -55,6 +57,25 @@ public sealed class LibraryCatalog
             .Select(f => new LibraryInfo(NormalizeId(f.ItemId), f.Name, f.CollectionType?.ToString(), protectedIds.Contains(NormalizeId(f.ItemId))))
             .OrderBy(l => l.Name, StringComparer.OrdinalIgnoreCase)
             .ToList();
+    }
+
+    /// <summary>
+    /// Cached <see cref="BuildScope"/> over all libraries. Building reads play data for every user,
+    /// so the admin's preview and the subsequent create share one result for a couple of minutes.
+    /// </summary>
+    public List<CandidateItem> GetScopeCached(TimeSpan maxAge)
+    {
+        lock (_scopeLock)
+        {
+            if (_scopeCache is { } c && DateTime.UtcNow - c.At < maxAge)
+            {
+                return c.Items;
+            }
+
+            var items = BuildScope();
+            _scopeCache = (DateTime.UtcNow, items);
+            return items;
+        }
     }
 
     /// <summary>All votable items in every library, with stats. Filtering by scope happens in <see cref="CandidateFilter"/>.</summary>

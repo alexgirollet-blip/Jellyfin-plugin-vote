@@ -86,7 +86,8 @@ public static class ViewBuilder
 {
     public const int MaxPageSize = 100;
 
-    public static ItemPage BuildPage(VoteSession session, Guid viewerId, bool viewerIsAdmin, ItemQuery q)
+    /// <param name="isVisible">Optional filter: items the viewer may see under their library access.</param>
+    public static ItemPage BuildPage(VoteSession session, Guid viewerId, bool viewerIsAdmin, ItemQuery q, Func<Guid, bool>? isVisible = null)
     {
         var tallies = Tally.Count(session).ToDictionary(t => t.ItemId);
         bool resolved = session.Status != SessionStatus.Open;
@@ -94,6 +95,10 @@ public static class ViewBuilder
         bool showNames = showTallies && (viewerIsAdmin || session.Settings.ShowVoterNames);
 
         IEnumerable<CandidateItem> items = session.Candidates;
+        if (isVisible is not null)
+        {
+            items = items.Where(c => isVisible(c.ItemId));
+        }
         if (!string.IsNullOrWhiteSpace(q.Search))
         {
             var term = q.Search.Trim();
