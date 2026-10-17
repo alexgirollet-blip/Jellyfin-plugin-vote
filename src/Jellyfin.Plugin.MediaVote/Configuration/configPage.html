@@ -1,1 +1,704 @@
-<div id="MediaVoteConfigPage" data-role="page" class="page type-interior pluginConfigurationPage"></div>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <title>Media Vote</title>
+</head>
+<body>
+<div id="MediaVoteConfigPage" data-role="page" class="page type-interior pluginConfigurationPage" data-require="emby-input,emby-button,emby-select,emby-checkbox">
+    <style>
+        #MediaVoteConfigPage .mv-wrap { max-width: 70em; }
+        #MediaVoteConfigPage .mv-tabs { display: flex; flex-wrap: wrap; gap: .4em; margin: 0 0 1.2em; }
+        #MediaVoteConfigPage .mv-tabs button { min-height: 44px; }
+        #MediaVoteConfigPage .mv-tabs button[aria-selected="true"] { outline: 2px solid currentColor; outline-offset: -2px; }
+        #MediaVoteConfigPage .mv-card { border: 1px solid rgba(128,128,128,.35); border-radius: .6em; padding: 1em; margin: 0 0 1em; background: rgba(128,128,128,.08); }
+        #MediaVoteConfigPage .mv-card h3 { margin: 0 0 .5em; }
+        #MediaVoteConfigPage .mv-row { display: flex; flex-wrap: wrap; gap: .5em; align-items: center; margin: .5em 0; }
+        #MediaVoteConfigPage .mv-row > button, #MediaVoteConfigPage .mv-row > a { min-height: 44px; margin: 0; }
+        #MediaVoteConfigPage .mv-grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 18em), 1fr)); gap: 0 1.5em; }
+        #MediaVoteConfigPage .mv-muted { opacity: .75; font-size: .9em; }
+        #MediaVoteConfigPage .mv-warn { border-left: .3em solid currentColor; padding: .6em .9em; background: rgba(128,128,128,.15); margin: .6em 0; }
+        #MediaVoteConfigPage .mv-ok { font-weight: 600; }
+        #MediaVoteConfigPage .mv-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+        #MediaVoteConfigPage table.mv-table { border-collapse: collapse; width: 100%; font-size: .9em; }
+        #MediaVoteConfigPage .mv-table th, #MediaVoteConfigPage .mv-table td { text-align: left; padding: .45em .5em; border-bottom: 1px solid rgba(128,128,128,.25); vertical-align: top; }
+        #MediaVoteConfigPage .mv-list { max-height: 16em; overflow-y: auto; border: 1px solid rgba(128,128,128,.3); border-radius: .4em; padding: .3em .6em; }
+        #MediaVoteConfigPage .mv-list label { display: flex; align-items: center; gap: .5em; min-height: 40px; }
+        #MediaVoteConfigPage .mv-list input[type=checkbox], #MediaVoteConfigPage .mv-radio input { width: 1.3em; height: 1.3em; }
+        #MediaVoteConfigPage .mv-radio { display: flex; flex-direction: column; gap: .3em; margin: .4em 0; }
+        #MediaVoteConfigPage .mv-radio label { display: flex; gap: .5em; align-items: flex-start; min-height: 40px; }
+        #MediaVoteConfigPage .mv-field { display: flex; flex-direction: column; gap: .3em; margin: .6em 0; }
+        #MediaVoteConfigPage .mv-field input, #MediaVoteConfigPage .mv-field select, #MediaVoteConfigPage .mv-field textarea { min-height: 44px; font-size: 16px; padding: .4em .6em; border-radius: .3em; border: 1px solid rgba(128,128,128,.45); background: rgba(128,128,128,.12); color: inherit; font-family: inherit; }
+        #MediaVoteConfigPage .mv-field select option { color: initial; background: initial; }
+        #MediaVoteConfigPage .mv-check { display: flex; gap: .6em; align-items: center; min-height: 44px; }
+        #MediaVoteConfigPage .mv-check input { width: 1.3em; height: 1.3em; flex: 0 0 auto; }
+        #MediaVoteConfigPage .mv-msg { position: sticky; top: 0; z-index: 5; }
+        #MediaVoteConfigPage .mv-msg:empty { display: none; }
+        #MediaVoteConfigPage .mv-pill { display: inline-block; padding: .1em .6em; border-radius: 1em; border: 1px solid rgba(128,128,128,.5); font-size: .85em; }
+        #MediaVoteConfigPage textarea.mv-code { width: 100%; min-height: 6em; font-family: monospace; font-size: 13px; }
+        #MediaVoteConfigPage [hidden] { display: none !important; }
+    </style>
+    <div data-role="content">
+        <div class="content-primary mv-wrap">
+            <h2 class="sectionTitle">Media Vote</h2>
+            <div class="mv-msg" id="mvMsg" role="status" aria-live="polite"></div>
+            <div class="mv-tabs" role="tablist" id="mvTabs">
+                <button is="emby-button" type="button" class="raised emby-button" role="tab" data-tab="votes" aria-selected="true">Votes</button>
+                <button is="emby-button" type="button" class="raised emby-button" role="tab" data-tab="new">New vote</button>
+                <button is="emby-button" type="button" class="raised emby-button" role="tab" data-tab="settings">Settings</button>
+                <button is="emby-button" type="button" class="raised emby-button" role="tab" data-tab="status">Status &amp; setup</button>
+                <button is="emby-button" type="button" class="raised emby-button" role="tab" data-tab="audit">Audit log</button>
+            </div>
+
+            <!-- ===================== VOTES ===================== -->
+            <section data-panel="votes" role="tabpanel">
+                <div id="mvOpen"></div>
+                <div id="mvDetail"></div>
+                <div class="mv-card">
+                    <h3>History</h3>
+                    <div class="mv-table-wrap"><table class="mv-table"><thead><tr><th>Title</th><th>Status</th><th>Deadline</th><th>Voters</th><th></th></tr></thead><tbody id="mvHistory"></tbody></table></div>
+                </div>
+            </section>
+
+            <!-- ===================== NEW VOTE ===================== -->
+            <section data-panel="new" role="tabpanel" hidden>
+                <form id="mvNewForm" novalidate>
+                    <div class="mv-card">
+                        <h3>About the vote</h3>
+                        <div class="mv-field"><label for="mvTitle">Title</label><input id="mvTitle" maxlength="200" required placeholder="e.g. Spring clean-up"></div>
+                        <div class="mv-field"><label for="mvDesc">Description (optional)</label><textarea id="mvDesc" maxlength="2000" rows="3"></textarea></div>
+                    </div>
+                    <div class="mv-card">
+                        <h3>Who can vote</h3>
+                        <div class="mv-radio">
+                            <label><input type="radio" name="mvVoters" value="all" checked> <span>All users</span></label>
+                            <label><input type="radio" name="mvVoters" value="some"> <span>Selected users</span></label>
+                        </div>
+                        <div class="mv-list" id="mvUserList" hidden></div>
+                    </div>
+                    <div class="mv-card">
+                        <h3>What can be voted on</h3>
+                        <p class="mv-muted">Only whole movies and whole series. Seasons, episodes and collections (box sets) are never votable. Protected items and libraries (Settings) are always excluded.</p>
+                        <div class="mv-field"><label for="mvScope">Scope</label>
+                            <select id="mvScope">
+                                <option value="AllLibraries">All libraries</option>
+                                <option value="SpecificLibraries">Specific libraries</option>
+                                <option value="MoviesOnly">Movies only</option>
+                                <option value="SeriesOnly">Series only</option>
+                                <option value="HandPicked">Hand-picked titles</option>
+                            </select>
+                        </div>
+                        <div class="mv-list" id="mvLibList" hidden></div>
+                        <div id="mvPickBox" hidden>
+                            <div class="mv-field"><label for="mvPickSearch">Find titles</label><input id="mvPickSearch" type="search" placeholder="Type a title" autocomplete="off"></div>
+                            <div class="mv-list" id="mvPickResults"></div>
+                            <p class="mv-muted">Picked:</p>
+                            <div class="mv-list" id="mvPicked"></div>
+                        </div>
+                        <h4>Optional filters</h4>
+                        <label class="mv-check"><input type="checkbox" id="mvNever"> <span>Only titles nobody has ever watched</span></label>
+                        <div class="mv-grid2">
+                            <div class="mv-field"><label for="mvNotMonths">Not watched by anyone in the last … months (0 = off)</label><input id="mvNotMonths" type="number" min="0" max="240" value="0"></div>
+                            <div class="mv-field"><label for="mvLargest">Only the … largest titles (0 = off)</label><input id="mvLargest" type="number" min="0" max="10000" value="0"></div>
+                        </div>
+                    </div>
+                    <div class="mv-card">
+                        <h3>Rules</h3>
+                        <div class="mv-grid2">
+                            <div class="mv-field"><label for="mvVotes">Votes per user</label><input id="mvVotes" type="number" min="1" max="1000" value="3"></div>
+                            <div class="mv-field"><label for="mvWinners">Number of winners to act on (N)</label><input id="mvWinners" type="number" min="1" max="1000" value="1"></div>
+                            <div class="mv-field"><label for="mvDeadline">Deadline (<span class="mvTz">Europe/London</span>)</label><input id="mvDeadline" type="datetime-local" required></div>
+                            <div class="mv-field"><label for="mvTurnout">Minimum turnout % (0 = off)</label><input id="mvTurnout" type="number" min="0" max="100" value="0"></div>
+                        </div>
+                        <label class="mv-check"><input type="checkbox" id="mvMultiple"> <span>Allow several votes on the same title (default: off)</span></label>
+                        <label class="mv-check"><input type="checkbox" id="mvKeep"> <span>Allow "keep" votes (each keep vote subtracts one from a title's score)</span></label>
+                        <div class="mv-field" id="mvKeepCountBox" hidden><label for="mvKeepCount">Keep votes per user</label><input id="mvKeepCount" type="number" min="1" max="1000" value="1"></div>
+                        <label class="mv-check"><input type="checkbox" id="mvNames" checked> <span>Show voter names to other participants (admins always see them)</span></label>
+                        <label class="mv-check"><input type="checkbox" id="mvTallies" checked> <span>Show live vote counts while the vote is open</span></label>
+                        <div class="mv-field"><label for="mvTie">If a tie crosses the cut-off</label>
+                            <select id="mvTie">
+                                <option value="FlagForAdmin">Act on none of the tied titles; let me break the tie (default)</option>
+                                <option value="IncludeAllTied">Act on all tied titles (may exceed N)</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="mv-card">
+                        <h3>Outcome</h3>
+                        <div class="mv-radio">
+                            <label><input type="radio" name="mvOutcome" value="NotifyOnly" checked> <span><strong>Notify only (default)</strong> — produce a report with names, paths, sizes and matching Radarr/Sonarr/Jellyseerr entries. Nothing is deleted.</span></label>
+                            <label><input type="radio" name="mvOutcome" value="DeleteAutomatically"> <span><strong>Delete automatically</strong> — delete the winners from Jellyfin <em>and their files from disk</em> (a series: every season, episode and the series folder), after the Radarr/Sonarr/Jellyseerr steps.</span></label>
+                        </div>
+                        <div class="mv-warn" id="mvDeleteBox" hidden>
+                            <label class="mv-check"><input type="checkbox" id="mvDeleteConfirm"> <span>I understand the winning titles and their files will be permanently deleted when the vote closes.</span></label>
+                        </div>
+                    </div>
+                    <div class="mv-card">
+                        <div class="mv-row">
+                            <button is="emby-button" type="button" class="raised emby-button" id="mvPreviewBtn">Preview</button>
+                            <button is="emby-button" type="submit" class="raised button-submit emby-button" id="mvCreateBtn">Create vote</button>
+                        </div>
+                        <div id="mvPreview"></div>
+                    </div>
+                </form>
+            </section>
+
+            <!-- ===================== SETTINGS ===================== -->
+            <section data-panel="settings" role="tabpanel" hidden>
+                <form id="mvSettingsForm" novalidate>
+                    <div class="mv-card">
+                        <h3>Entry points</h3>
+                        <p class="mv-muted">All open the same voting screen. The banner can only be turned off if the Vote tab, the sidebar page or the standalone page is on.</p>
+                        <label class="mv-check"><input type="checkbox" id="sBanner"> <span>Banner at the top of the home page</span></label>
+                        <label class="mv-check"><input type="checkbox" id="sTab"> <span>"Vote" tab on the home page (needs the Custom Tabs plugin)</span></label>
+                        <label class="mv-check"><input type="checkbox" id="sPage"> <span>"Vote" page in the sidebar (needs the Plugin Pages plugin)</span></label>
+                        <label class="mv-check"><input type="checkbox" id="sSection"> <span>"Current leaders" row (needs Home Screen Sections; enable the section there too)</span></label>
+                        <label class="mv-check"><input type="checkbox" id="sStandalone"> <span>Standalone page at <code>/MediaVote/vote</code> (own login form)</span></label>
+                        <div class="mv-field"><label for="sTabTitle">Tab title</label><input id="sTabTitle" maxlength="40"></div>
+                    </div>
+                    <div class="mv-card">
+                        <h3>General</h3>
+                        <div class="mv-grid2">
+                            <div class="mv-field"><label for="sTz">Time zone (IANA name)</label><input id="sTz" placeholder="Europe/London"></div>
+                            <div class="mv-field"><label for="sSoon">"Closing soon" reminder starts … hours before the deadline</label><input id="sSoon" type="number" min="0" max="336"></div>
+                            <div class="mv-field"><label for="sResultDays">Show the result banner to voters for … days</label><input id="sResultDays" type="number" min="0" max="365"></div>
+                        </div>
+                        <label class="mv-check"><input type="checkbox" id="sPlayback"> <span>Also use the Playback Reporting plugin's data for play counts, if it is installed</span></label>
+                    </div>
+                    <div class="mv-card">
+                        <h3>Protected (never votable, never deleted)</h3>
+                        <p class="mv-muted">Libraries:</p>
+                        <div class="mv-list" id="sProtLibs"></div>
+                        <div class="mv-field"><label for="sProtSearch">Protect a title</label><input id="sProtSearch" type="search" placeholder="Type a title" autocomplete="off"></div>
+                        <div class="mv-list" id="sProtResults"></div>
+                        <p class="mv-muted">Protected titles:</p>
+                        <div class="mv-list" id="sProtItems"></div>
+                    </div>
+                    <div class="mv-card" id="sArr"></div>
+                    <div class="mv-card">
+                        <h3>Webhook (optional)</h3>
+                        <div class="mv-field"><label for="sHookUrl">Webhook URL (stored masked)</label><input id="sHookUrl" type="password" autocomplete="off" placeholder="https://discord.com/api/webhooks/…"></div>
+                        <div class="mv-field"><label for="sHookKind">Format</label><select id="sHookKind"><option value="Discord">Discord</option><option value="Generic">Generic JSON</option></select></div>
+                        <label class="mv-check"><input type="checkbox" id="sHookOpen"> <span>Vote opened</span></label>
+                        <label class="mv-check"><input type="checkbox" id="sHookSoon"> <span>Closing soon</span></label>
+                        <label class="mv-check"><input type="checkbox" id="sHookResults"> <span>Results</span></label>
+                    </div>
+                    <div class="mv-row"><button is="emby-button" type="submit" class="raised button-submit emby-button">Save settings</button></div>
+                </form>
+            </section>
+
+            <!-- ===================== STATUS ===================== -->
+            <section data-panel="status" role="tabpanel" hidden>
+                <div id="mvStatus"></div>
+            </section>
+
+            <!-- ===================== AUDIT ===================== -->
+            <section data-panel="audit" role="tabpanel" hidden>
+                <div class="mv-card">
+                    <h3>Audit log</h3>
+                    <p class="mv-muted">Every vote and every deletion action, newest first.</p>
+                    <div class="mv-table-wrap"><table class="mv-table"><thead><tr><th>Time</th><th>Action</th><th>By</th><th>Details</th></tr></thead><tbody id="mvAudit"></tbody></table></div>
+                </div>
+            </section>
+        </div>
+    </div>
+
+    <script type="text/javascript">
+    (function () {
+        'use strict';
+        var page = document.querySelector('#MediaVoteConfigPage');
+        var MASK = '••••••';
+        // Keep global shortcut plugins (e.g. Jellyfin Enhanced) from reacting to keys typed in our form fields.
+        if (!window.__mediavoteAdminGuard) {
+            window.__mediavoteAdminGuard = true;
+            ['keydown', 'keyup', 'keypress'].forEach(function (type) {
+                window.addEventListener(type, function (e) {
+                    var t = e.target;
+                    if (t && t.closest && t.closest('#MediaVoteConfigPage') && /^(INPUT|SELECT|TEXTAREA)$/.test(t.tagName)) { e.stopPropagation(); }
+                }, true);
+            });
+        }
+        var data = { overview: null, users: [], libraries: [], settings: null, picked: {}, protItems: {} };
+
+        function $(sel) { return page.querySelector(sel); }
+        function h(tag, attrs, kids) {
+            var e = document.createElement(tag);
+            Object.keys(attrs || {}).forEach(function (k) {
+                var v = attrs[k];
+                if (v === null || v === undefined || v === false) { return; }
+                if (k === 'text') { e.textContent = v; }
+                else if (k === 'className') { e.className = v; }
+                else if (k.indexOf('on') === 0) { e.addEventListener(k.slice(2), v); }
+                else { e.setAttribute(k, v === true ? '' : v); }
+            });
+            (kids || []).forEach(function (c) { if (c !== null && c !== undefined && c !== false) { e.appendChild(typeof c === 'string' ? document.createTextNode(c) : c); } });
+            return e;
+        }
+        function btn(label, onclick, primary) {
+            return h('button', { type: 'button', className: 'raised emby-button' + (primary ? ' button-submit' : ''), onclick: onclick }, [label]);
+        }
+        function bytes(b) {
+            if (!b) { return '0 B'; }
+            var u = ['B', 'KB', 'MB', 'GB', 'TB'];
+            var i = Math.min(4, Math.floor(Math.log(b) / Math.log(1024)));
+            return (b / Math.pow(1024, i)).toFixed(i >= 3 ? 1 : 0) + ' ' + u[i];
+        }
+        function msg(text, isError) {
+            var m = $('#mvMsg');
+            m.innerHTML = '';
+            if (!text) { return; }
+            var lines = Array.isArray(text) ? text : [text];
+            m.appendChild(h('div', { className: 'mv-warn', role: isError ? 'alert' : 'status' }, lines.map(function (l) { return h('div', { text: l }); })));
+            if (!isError) { setTimeout(function () { if (m.textContent === lines.join('')) { m.innerHTML = ''; } }, 5000); }
+            m.scrollIntoView({ block: 'nearest' });
+        }
+        function loading(on) {
+            if (window.Dashboard) { if (on) { Dashboard.showLoadingMsg(); } else { Dashboard.hideLoadingMsg(); } }
+        }
+        function api(method, path, body, raw) {
+            var headers = { 'Authorization': 'MediaBrowser Token="' + ApiClient.accessToken() + '"', 'Accept': raw ? '*/*' : 'application/json' };
+            if (body !== undefined) { headers['Content-Type'] = 'application/json'; }
+            return fetch(ApiClient.getUrl('MediaVote/Admin/' + path), { method: method, headers: headers, body: body === undefined ? undefined : JSON.stringify(body), cache: 'no-store' })
+                .then(function (r) {
+                    if (raw) { if (!r.ok) { throw new Error('HTTP ' + r.status); } return r.blob(); }
+                    return r.text().then(function (t) {
+                        var j = null;
+                        try { j = t ? JSON.parse(t) : null; } catch (e) { j = null; }
+                        if (!r.ok && !(j && j.ok === false)) { throw new Error((j && (j.message || j.error)) || ('HTTP ' + r.status)); }
+                        return j;
+                    });
+                });
+        }
+        // In-page confirmation (no window.confirm).
+        function confirmBox(container, text, label, onYes) {
+            var box = h('div', { className: 'mv-warn' }, [h('p', { text: text })]);
+            box.appendChild(h('div', { className: 'mv-row' }, [btn(label, function () { box.remove(); onYes(); }, true), btn('Cancel', function () { box.remove(); })]));
+            container.appendChild(box);
+            box.querySelector('button').focus();
+        }
+
+        // ---------------- tabs
+        Array.prototype.forEach.call(page.querySelectorAll('#mvTabs [data-tab]'), function (b) {
+            b.addEventListener('click', function () { showTab(b.getAttribute('data-tab')); });
+        });
+        function showTab(name) {
+            Array.prototype.forEach.call(page.querySelectorAll('#mvTabs [data-tab]'), function (b) { b.setAttribute('aria-selected', b.getAttribute('data-tab') === name ? 'true' : 'false'); });
+            Array.prototype.forEach.call(page.querySelectorAll('[data-panel]'), function (p) { p.hidden = p.getAttribute('data-panel') !== name; });
+            if (name === 'audit') { loadAudit(); }
+            if (name === 'status' || name === 'votes') { loadOverview(); }
+        }
+
+        // ---------------- overview / votes
+        function loadOverview() {
+            return api('GET', 'Overview').then(function (o) {
+                data.overview = o;
+                Array.prototype.forEach.call(page.querySelectorAll('.mvTz'), function (e) { e.textContent = o.timeZone; });
+                if (!$('#mvDeadline').value) { $('#mvDeadline').value = o.defaultDeadlineInput; }
+                renderHistory(o);
+                renderOpen(o);
+                renderStatus(o);
+            }).catch(function (e) { msg('Could not load Media Vote: ' + e.message, true); });
+        }
+
+        function statusLabel(s) {
+            if (s.status === 'Open') { return 'Open'; }
+            if (s.status === 'Cancelled') { return 'Cancelled'; }
+            return s.needsAttention ? 'Resolved – needs attention' : 'Resolved';
+        }
+
+        function renderHistory(o) {
+            var tb = $('#mvHistory');
+            tb.innerHTML = '';
+            if (!o.sessions.length) { tb.appendChild(h('tr', {}, [h('td', { colspan: '5', text: 'No votes yet. Create one in "New vote".' })])); return; }
+            o.sessions.forEach(function (s) {
+                tb.appendChild(h('tr', {}, [
+                    h('td', { text: s.title }),
+                    h('td', {}, [h('span', { className: 'mv-pill', text: statusLabel(s) })]),
+                    h('td', { text: s.deadlineLocal }),
+                    h('td', { text: String(s.voters) }),
+                    h('td', {}, [btn('Details', function () { showDetail(s.id); })])
+                ]));
+            });
+        }
+
+        function renderOpen(o) {
+            var box = $('#mvOpen');
+            box.innerHTML = '';
+            if (!o.openSessionId) {
+                box.appendChild(h('div', { className: 'mv-card' }, [h('h3', { text: 'No vote is open' }), h('p', { className: 'mv-muted', text: 'Users see "No active vote right now" in the Vote tab and page, and no banner.' }), btn('Create a vote', function () { showTab('new'); }, true)]));
+                return;
+            }
+            showDetail(o.openSessionId, box);
+        }
+
+        function showDetail(id, target) {
+            var box = target || $('#mvDetail');
+            api('GET', 'Sessions/' + id).then(function (d) { renderDetail(box, d); if (!target) { box.scrollIntoView({ block: 'start' }); } })
+                .catch(function (e) { msg(e.message, true); });
+        }
+
+        function renderDetail(box, d) {
+            var s = d.session;
+            var st = s.settings;
+            var r = s.result;
+            var names = {};
+            s.candidates.forEach(function (c) { names[c.itemId] = c; });
+            box.innerHTML = '';
+            var card = h('div', { className: 'mv-card' });
+            box.appendChild(card);
+            card.appendChild(h('h3', { text: st.title + ' — ' + s.status }));
+            card.appendChild(h('p', { className: 'mv-muted', text: 'Deadline ' + d.deadlineLocal + ' · ' + s.candidates.length + ' titles · ' + st.votesPerUser + ' votes each · N = ' + st.winnerCount + ' · ' + (st.outcome === 'DeleteAutomatically' ? 'DELETE AUTOMATICALLY' : 'Notify only') + ' · turnout ' + d.voterCount + '/' + d.eligibleCount }));
+            if (d.nonVoters && d.nonVoters.length && s.status === 'Open') { card.appendChild(h('p', { className: 'mv-muted', text: 'Not voted yet: ' + d.nonVoters.join(', ') })); }
+            var actions = h('div', { className: 'mv-row' });
+            card.appendChild(actions);
+            var area = h('div');
+            card.appendChild(area);
+
+            if (s.status === 'Open') {
+                var ext = h('input', { type: 'datetime-local', value: d.deadlineLocalInput, 'aria-label': 'New deadline' });
+                actions.appendChild(h('span', { className: 'mv-field', style: 'margin:0' }, [ext]));
+                actions.appendChild(btn('Extend', function () {
+                    api('POST', 'Sessions/' + s.id + '/Extend', { deadlineLocal: ext.value }).then(done('Deadline updated.'), fail);
+                }));
+                actions.appendChild(btn('Close now', function () {
+                    confirmBox(area, 'Close the vote now and resolve it' + (st.outcome === 'DeleteAutomatically' ? ' — winners will be DELETED' : '') + '?', 'Close now', function () {
+                        loading(true);
+                        api('POST', 'Sessions/' + s.id + '/Close').then(done('Vote closed.'), fail).then(function () { loading(false); });
+                    });
+                }));
+                actions.appendChild(btn('Cancel vote', function () {
+                    confirmBox(area, 'Cancel this vote? Nothing will be deleted and the votes are kept in history.', 'Cancel vote', function () {
+                        api('POST', 'Sessions/' + s.id + '/Cancel').then(done('Vote cancelled.'), fail);
+                    });
+                }));
+            }
+            actions.appendChild(btn('Dry run', function () {
+                loading(true);
+                api('POST', 'Sessions/' + s.id + '/DryRun').then(function (res) { renderOutcome(area, res, names, true); }, fail).then(function () { loading(false); });
+            }));
+            actions.appendChild(btn('CSV', function () {
+                api('GET', 'Sessions/' + s.id + '/Csv', undefined, true).then(function (blob) {
+                    var a = h('a', { href: URL.createObjectURL(blob), download: 'media-vote.csv' });
+                    page.appendChild(a); a.click(); a.remove();
+                }, fail);
+            }));
+
+            if (r) {
+                if (r.tiedItemIds && r.tiedItemIds.length) {
+                    var tie = h('div', { className: 'mv-warn' }, [h('strong', { text: 'Tie: choose up to ' + r.tieSlots + ' title(s) to act on. Unchosen tied titles are kept.' })]);
+                    var boxes = r.tiedItemIds.map(function (tid) {
+                        var cb = h('input', { type: 'checkbox', value: tid });
+                        tie.appendChild(h('label', { className: 'mv-check' }, [cb, h('span', { text: (names[tid] ? names[tid].name : tid) })]));
+                        return cb;
+                    });
+                    tie.appendChild(btn('Apply tie-break', function () {
+                        var chosen = boxes.filter(function (b) { return b.checked; }).map(function (b) { return b.value; });
+                        confirmBox(tie, 'Act on ' + chosen.length + ' title(s)' + (st.outcome === 'DeleteAutomatically' ? ' — they will be DELETED' : '') + '?', 'Apply', function () {
+                            api('POST', 'Sessions/' + s.id + '/BreakTie', { itemIds: chosen }).then(done('Tie broken.'), fail);
+                        });
+                    }, true));
+                    card.appendChild(tie);
+                }
+                if (!r.turnoutMet && r.execution === 'Skipped') {
+                    card.appendChild(h('div', { className: 'mv-warn' }, [h('p', { text: 'Minimum turnout not met; nothing was acted on.' }), btn('Resolve anyway', function () {
+                        confirmBox(card, 'Ignore the turnout requirement and act on the winners now?', 'Resolve anyway', function () {
+                            api('POST', 'Sessions/' + s.id + '/ResolveAnyway').then(done('Resolved.'), fail);
+                        });
+                    }, true)]));
+                }
+                if (st.outcome === 'DeleteAutomatically' && r.items.some(function (i) { return ['SkippedExternalFailure', 'DeleteFailed', 'NotAttempted', 'PreflightFailed'].indexOf(i.status) >= 0; })) {
+                    actions.appendChild(btn('Retry failed items', function () {
+                        confirmBox(area, 'Retry the items that were not completed? They will be deleted if all checks pass.', 'Retry', function () {
+                            api('POST', 'Sessions/' + s.id + '/Retry').then(done('Retry finished.'), fail);
+                        });
+                    }));
+                }
+                renderOutcome(card, r, names, false);
+            }
+
+            // Ranking with voter names (admins always see names).
+            var rank = h('div', { className: 'mv-table-wrap' });
+            var table = h('table', { className: 'mv-table' }, [h('thead', {}, [h('tr', {}, ['#', 'Title', 'Score', 'Remove votes', 'Keep votes', 'Size'].map(function (t) { return h('th', { text: t }); }))])]);
+            var tbody = h('tbody');
+            d.ranking.slice(0, 50).forEach(function (t, i) {
+                var c = names[t.itemId] || {};
+                tbody.appendChild(h('tr', {}, [
+                    h('td', { text: String(i + 1) }), h('td', { text: (c.name || t.itemId) + (c.year ? ' (' + c.year + ')' : '') }), h('td', { text: String(t.removeVotes - t.keepVotes) }),
+                    h('td', { text: t.removeVotes + (t.removeVoters.length ? ' — ' + t.removeVoters.join(', ') : '') }),
+                    h('td', { text: t.keepVotes + (t.keepVoters.length ? ' — ' + t.keepVoters.join(', ') : '') }),
+                    h('td', { text: bytes(c.sizeBytes) })
+                ]));
+            });
+            table.appendChild(tbody);
+            rank.appendChild(table);
+            card.appendChild(h('h4', { text: 'Ranking (top 50)' }));
+            card.appendChild(rank);
+            card.appendChild(h('details', {}, [h('summary', { text: 'All votes (' + s.votes.length + ')' }), h('div', { className: 'mv-table-wrap' }, [h('table', { className: 'mv-table' }, [h('tbody', {}, d.votes.map(function (v) {
+                return h('tr', {}, [h('td', { text: v.castLocal }), h('td', { text: v.userName }), h('td', { text: v.kind }), h('td', { text: v.item })]);
+            }))])])]));
+        }
+
+        function renderOutcome(container, r, names, isDry) {
+            var old = container.querySelector('.mv-outcome' + (isDry ? '-dry' : ''));
+            if (old) { old.remove(); }
+            var wrap = h('div', { className: 'mv-card mv-outcome' + (isDry ? '-dry' : '') });
+            wrap.appendChild(h('h4', { text: isDry ? 'Dry run — what would happen if the vote closed now (nothing was changed)' : 'Result' + (r.outcome === 'NotifyOnly' ? ' (notify only: nothing was deleted)' : '') }));
+            wrap.appendChild(h('p', { className: 'mv-muted', text: 'Turnout ' + r.voterCount + '/' + r.eligibleVoterCount + ' (' + r.turnoutPercent + '%) · selected ' + bytes(r.totalBytesSelected) + (r.totalBytesFreed ? ' · freed ' + bytes(r.totalBytesFreed) : '') + (r.execution ? ' · ' + r.execution : '') }));
+            (r.notes || []).forEach(function (n) { wrap.appendChild(h('p', { className: 'mv-warn', text: n })); });
+            if (!r.items.length) { wrap.appendChild(h('p', { text: 'No winners.' })); }
+            r.items.forEach(function (i) {
+                var item = h('div', { className: 'mv-card' }, [
+                    h('strong', { text: i.name + ' (' + i.kind + ') — score ' + i.score }),
+                    h('div', {}, [h('span', { className: 'mv-pill', text: i.status }), ' ' + bytes(i.sizeBytes)]),
+                    i.message ? h('p', { text: i.message }) : null,
+                    i.paths && i.paths.length ? h('p', { className: 'mv-muted', text: 'Paths: ' + i.paths.join(' | ') }) : null
+                ]);
+                (i.externalSteps || []).forEach(function (x) {
+                    item.appendChild(h('div', { className: 'mv-muted', text: x.service + ' · ' + x.action + ' · ' + x.status + (x.matchedTitle ? ' · ' + x.matchedTitle : '') + (x.message ? ' — ' + x.message : '') }));
+                });
+                wrap.appendChild(item);
+            });
+            container.appendChild(wrap);
+        }
+
+        function done(text) { return function (res) { if (res && res.ok === false) { fail({ message: (res.errors || [res.error]).join(' ') }); return; } msg(text); loadOverview(); $('#mvDetail').innerHTML = ''; }; }
+        function fail(e) { msg(e.message || String(e), true); }
+
+        // ---------------- new vote
+        function radioValue(name) { var c = page.querySelector('input[name="' + name + '"]:checked'); return c ? c.value : null; }
+        Array.prototype.forEach.call(page.querySelectorAll('input[name="mvVoters"]'), function (r) { r.addEventListener('change', function () { $('#mvUserList').hidden = radioValue('mvVoters') !== 'some'; }); });
+        Array.prototype.forEach.call(page.querySelectorAll('input[name="mvOutcome"]'), function (r) {
+            r.addEventListener('change', function () { var del = radioValue('mvOutcome') === 'DeleteAutomatically'; $('#mvDeleteBox').hidden = !del; if (!del) { $('#mvDeleteConfirm').checked = false; } });
+        });
+        $('#mvScope').addEventListener('change', function () { var v = $('#mvScope').value; $('#mvLibList').hidden = v !== 'SpecificLibraries'; $('#mvPickBox').hidden = v !== 'HandPicked'; });
+        $('#mvKeep').addEventListener('change', function () { $('#mvKeepCountBox').hidden = !$('#mvKeep').checked; });
+
+        function renderPicker(listSel, store, results) {
+            var list = $(listSel);
+            list.innerHTML = '';
+            (results || []).forEach(function (r) {
+                list.appendChild(h('label', {}, [h('button', { type: 'button', className: 'raised emby-button', 'aria-label': 'Add ' + r.name, onclick: function () { store[r.id] = r; renderPicked(); } }, ['+']), h('span', { text: r.name + (r.year ? ' (' + r.year + ')' : '') + ' · ' + r.kind })]));
+            });
+        }
+        function renderPicked() {
+            [['#mvPicked', data.picked], ['#sProtItems', data.protItems]].forEach(function (pair) {
+                var list = $(pair[0]);
+                list.innerHTML = '';
+                Object.keys(pair[1]).forEach(function (id) {
+                    var r = pair[1][id];
+                    list.appendChild(h('label', {}, [h('button', { type: 'button', className: 'raised emby-button', 'aria-label': 'Remove ' + r.name, onclick: function () { delete pair[1][id]; renderPicked(); } }, ['−']), h('span', { text: r.name + (r.year ? ' (' + r.year + ')' : '') })]));
+                });
+                if (!Object.keys(pair[1]).length) { list.appendChild(h('span', { className: 'mv-muted', text: 'None' })); }
+            });
+        }
+        function searchInto(inputSel, resultsSel, store) {
+            var t = null;
+            $(inputSel).addEventListener('input', function () {
+                clearTimeout(t);
+                var term = $(inputSel).value;
+                t = setTimeout(function () { api('GET', 'Search?term=' + encodeURIComponent(term)).then(function (res) { renderPicker(resultsSel, store, res); }, fail); }, 300);
+            });
+        }
+        searchInto('#mvPickSearch', '#mvPickResults', data.picked);
+        searchInto('#sProtSearch', '#sProtResults', data.protItems);
+
+        function checkedValues(listSel) { return Array.prototype.map.call(page.querySelectorAll(listSel + ' input:checked'), function (c) { return c.value; }); }
+        function num(sel) { return parseInt($(sel).value, 10) || 0; }
+
+        function buildRequest() {
+            return {
+                deadlineLocal: $('#mvDeadline').value,
+                settings: {
+                    title: $('#mvTitle').value.trim(),
+                    description: $('#mvDesc').value.trim() || null,
+                    allUsers: radioValue('mvVoters') === 'all',
+                    eligibleUserIds: checkedValues('#mvUserList'),
+                    scope: $('#mvScope').value,
+                    libraryIds: checkedValues('#mvLibList'),
+                    handPickedItemIds: Object.keys(data.picked),
+                    filterNeverWatched: $('#mvNever').checked,
+                    filterNotWatchedMonths: num('#mvNotMonths'),
+                    filterLargestCount: num('#mvLargest'),
+                    votesPerUser: num('#mvVotes'),
+                    allowMultipleVotesPerItem: $('#mvMultiple').checked,
+                    allowKeepVotes: $('#mvKeep').checked,
+                    keepVotesPerUser: num('#mvKeepCount') || 1,
+                    winnerCount: num('#mvWinners'),
+                    outcome: radioValue('mvOutcome'),
+                    deleteConfirmed: $('#mvDeleteConfirm').checked,
+                    tiePolicy: $('#mvTie').value,
+                    showVoterNames: $('#mvNames').checked,
+                    showLiveTallies: $('#mvTallies').checked,
+                    minTurnoutPercent: num('#mvTurnout')
+                }
+            };
+        }
+
+        $('#mvPreviewBtn').addEventListener('click', function () {
+            loading(true);
+            api('POST', 'Preview', buildRequest()).then(function (p) {
+                var box = $('#mvPreview');
+                box.innerHTML = '';
+                box.appendChild(h('p', { className: 'mv-ok', text: p.count + ' titles (' + p.movies + ' movies, ' + p.series + ' series), ' + bytes(p.totalBytes) + ' in total.' }));
+                box.appendChild(h('p', { text: 'Disk space that would be freed: up to ' + bytes(p.maxFreedBytes) + ' (the ' + num('#mvWinners') + ' largest). The exact figure depends on the winners; use "Dry run" on the vote to see it.' }));
+                var tbody = h('tbody');
+                p.items.slice(0, 50).forEach(function (i) { tbody.appendChild(h('tr', {}, [h('td', { text: i.name + (i.year ? ' (' + i.year + ')' : '') }), h('td', { text: i.kind }), h('td', { text: bytes(i.sizeBytes) }), h('td', { text: i.playCount ? i.playCount + ' plays' : 'never played' })])); });
+                box.appendChild(h('div', { className: 'mv-table-wrap' }, [h('table', { className: 'mv-table' }, [tbody])]));
+            }, fail).then(function () { loading(false); });
+        });
+
+        $('#mvNewForm').addEventListener('submit', function (e) {
+            e.preventDefault();
+            var req = buildRequest();
+            if (req.settings.outcome === 'DeleteAutomatically' && !req.settings.deleteConfirmed) { msg('Tick the confirmation box to use automatic deletion.', true); return; }
+            loading(true);
+            api('POST', 'Sessions', req).then(function (res) {
+                if (!res || res.ok === false) { msg((res && res.errors) || 'Could not create the vote.', true); return; }
+                msg('Vote created. Users will see the banner on their home page.');
+                $('#mvNewForm').reset();
+                data.picked = {}; renderPicked();
+                $('#mvDeadline').value = data.overview ? data.overview.defaultDeadlineInput : '';
+                showTab('votes');
+            }, fail).then(function () { loading(false); });
+        });
+
+        // ---------------- settings
+        var services = [
+            { key: 'Radarr', actions: [['Unmonitor', 'Unmonitor (default)'], ['RemoveAndExclude', 'Remove from Radarr + import exclusion (files left for Jellyfin)'], ['Nothing', 'Do nothing']] },
+            { key: 'Sonarr', actions: [['Unmonitor', 'Unmonitor (default)'], ['RemoveAndExclude', 'Remove from Sonarr + import list exclusion (files left for Jellyfin)'], ['Nothing', 'Do nothing']] },
+            { key: 'Jellyseerr', actions: [['Nothing', 'Do nothing (default)'], ['RemoveMediaRecord', 'Remove the media/request record so it can be requested again']] }
+        ];
+        function renderArr(s) {
+            var box = $('#sArr');
+            box.innerHTML = '';
+            box.appendChild(h('h3', { text: 'Radarr, Sonarr and Jellyseerr (used only by "Delete automatically")' }));
+            box.appendChild(h('p', { className: 'mv-muted', text: 'Each is optional. Keys are stored only in the plugin configuration, never logged and shown masked. Leave the masked value to keep the saved key. Order per title: Radarr/Sonarr, then Jellyseerr, then the Jellyfin deletion; if a configured step fails, that title is not deleted.' }));
+            services.forEach(function (svc) {
+                var url = h('input', { id: 's' + svc.key + 'Url', placeholder: 'http://192.168.1.10:' + (svc.key === 'Radarr' ? '7878' : svc.key === 'Sonarr' ? '8989' : '5055'), value: s[svc.key.toLowerCase() + 'Url'] || '', autocomplete: 'off', inputmode: 'url' });
+                var key = h('input', { id: 's' + svc.key + 'Key', type: 'password', autocomplete: 'off', value: s[svc.key.toLowerCase() + 'ApiKey'] || '', placeholder: 'API key' });
+                var act = h('select', { id: 's' + svc.key + 'Action' });
+                svc.actions.forEach(function (a) { act.appendChild(h('option', { value: a[0], text: a[1] })); });
+                act.value = s[svc.key.toLowerCase() + 'Action'];
+                var result = h('span', { className: 'mv-muted', role: 'status' });
+                var group = h('div', { className: 'mv-card' }, [
+                    h('h4', { text: svc.key }),
+                    h('div', { className: 'mv-grid2' }, [
+                        h('div', { className: 'mv-field' }, [h('label', { for: url.id, text: 'Base URL' }), url]),
+                        h('div', { className: 'mv-field' }, [h('label', { for: key.id, text: 'API key' }), key])
+                    ]),
+                    h('div', { className: 'mv-field' }, [h('label', { for: act.id, text: 'When a winning title is deleted' }), act]),
+                    h('div', { className: 'mv-row' }, [btn('Test connection', function () {
+                        result.textContent = 'Testing…';
+                        api('POST', 'Test/' + svc.key, { url: url.value, apiKey: key.value }).then(function (r) { result.textContent = r.message; }, function (e) { result.textContent = e.message; });
+                    }), result])
+                ]);
+                box.appendChild(group);
+            });
+        }
+
+        function loadSettings() {
+            return Promise.all([api('GET', 'Settings'), api('GET', 'Libraries'), api('GET', 'Users')]).then(function (res) {
+                var s = res[0];
+                data.settings = s;
+                data.libraries = res[1];
+                data.users = res[2];
+                $('#sBanner').checked = s.enableBanner; $('#sTab').checked = s.enableCustomTab; $('#sPage').checked = s.enablePluginPage;
+                $('#sSection').checked = s.enableHomeSection; $('#sStandalone').checked = s.enableStandalonePage; $('#sTabTitle').value = s.tabTitle;
+                $('#sTz').value = s.timeZoneId; $('#sSoon').value = s.closingSoonHours; $('#sResultDays').value = s.resultBannerDays; $('#sPlayback').checked = s.usePlaybackReporting;
+                $('#sHookUrl').value = s.webhookUrl; $('#sHookKind').value = s.webhookKind; $('#sHookOpen').checked = s.webhookOnOpened; $('#sHookSoon').checked = s.webhookOnClosingSoon; $('#sHookResults').checked = s.webhookOnResults;
+                renderArr(s);
+                var libs = $('#sProtLibs'); libs.innerHTML = '';
+                var libList = $('#mvLibList'); libList.innerHTML = '';
+                data.libraries.forEach(function (l) {
+                    libs.appendChild(h('label', {}, [h('input', { type: 'checkbox', value: l.id, checked: s.protectedLibraryIds.indexOf(l.id) >= 0 }), h('span', { text: l.name + (l.collectionType ? ' (' + l.collectionType + ')' : '') })]));
+                    libList.appendChild(h('label', {}, [h('input', { type: 'checkbox', value: l.id, disabled: l.protected }), h('span', { text: l.name + (l.protected ? ' — protected' : '') })]));
+                });
+                var users = $('#mvUserList'); users.innerHTML = '';
+                data.users.forEach(function (u) { users.appendChild(h('label', {}, [h('input', { type: 'checkbox', value: u.id, disabled: u.disabled }), h('span', { text: u.name + (u.disabled ? ' (disabled)' : '') + (u.admin ? ' · admin' : '') })])); });
+                data.protItems = {};
+                s.protectedItemIds.forEach(function (id) { data.protItems[id] = { id: id, name: (s.protectedItemNames && s.protectedItemNames[id]) || id }; });
+                renderPicked();
+            }).catch(function (e) { msg('Could not load settings: ' + e.message, true); });
+        }
+
+        $('#mvSettingsForm').addEventListener('submit', function (e) {
+            e.preventDefault();
+            var s = data.settings || {};
+            if (!$('#sBanner').checked && !$('#sTab').checked && !$('#sPage').checked && !$('#sStandalone').checked) {
+                msg('The banner can only be turned off if the Vote tab, the sidebar page or the standalone page is on.', true);
+                $('#sBanner').checked = true;
+                return;
+            }
+            var body = {
+                enableBanner: $('#sBanner').checked, enableCustomTab: $('#sTab').checked, enablePluginPage: $('#sPage').checked,
+                enableHomeSection: $('#sSection').checked, enableStandalonePage: $('#sStandalone').checked, tabTitle: $('#sTabTitle').value,
+                timeZoneId: $('#sTz').value, closingSoonHours: num('#sSoon'), resultBannerDays: num('#sResultDays'), usePlaybackReporting: $('#sPlayback').checked,
+                protectedItemIds: Object.keys(data.protItems), protectedLibraryIds: checkedValues('#sProtLibs'),
+                webhookUrl: $('#sHookUrl').value, webhookKind: $('#sHookKind').value, webhookOnOpened: $('#sHookOpen').checked,
+                webhookOnClosingSoon: $('#sHookSoon').checked, webhookOnResults: $('#sHookResults').checked, publicServerUrl: s.publicServerUrl || ''
+            };
+            services.forEach(function (svc) {
+                var k = svc.key.toLowerCase();
+                body[k + 'Url'] = $('#s' + svc.key + 'Url').value;
+                body[k + 'ApiKey'] = $('#s' + svc.key + 'Key').value;
+                body[k + 'Action'] = $('#s' + svc.key + 'Action').value;
+            });
+            loading(true);
+            api('POST', 'Settings', body).then(function (r) {
+                if (r && r.ok === false) { msg(r.errors, true); return; }
+                msg('Settings saved. Phone users must fully close and reopen the Jellyfin app to see entry-point changes.');
+                loadSettings(); loadOverview();
+            }, fail).then(function () { loading(false); });
+        });
+
+        // ---------------- status & setup
+        function renderStatus(o) {
+            var box = $('#mvStatus');
+            box.innerHTML = '';
+            var inj = o.injection;
+            var card = h('div', { className: 'mv-card' }, [h('h3', { text: 'Web client injection' }), h('p', { className: inj.mode === 'Failed' ? 'mv-warn' : 'mv-ok', text: inj.mode + ': ' + inj.message })]);
+            if (inj.dockerFix) { card.appendChild(h('div', { className: 'mv-warn' }, [h('strong', { text: 'How to fix: ' }), h('span', { text: inj.dockerFix })])); }
+            card.appendChild(h('div', { className: 'mv-row' }, [btn('Re-run injection and registration', function () {
+                api('POST', 'Reinject').then(function () { msg('Done. Users must reload (phones: fully close and reopen the app).'); loadOverview(); }, fail);
+            })]));
+            box.appendChild(card);
+            var ints = h('div', { className: 'mv-card' }, [h('h3', { text: 'Optional integrations (detected at runtime)' })]);
+            var tb = h('tbody');
+            (o.integrations || []).forEach(function (i) {
+                tb.appendChild(h('tr', {}, [h('td', { text: i.name }), h('td', { text: i.detected ? 'Installed ' + (i.version || '') : 'Not installed' }), h('td', { text: i.enabled ? 'On' : 'Off' }), h('td', { text: i.message })]));
+            });
+            ints.appendChild(h('div', { className: 'mv-table-wrap' }, [h('table', { className: 'mv-table' }, [h('thead', {}, [h('tr', {}, ['Plugin', 'Detected', 'Toggle', 'Status'].map(function (t) { return h('th', { text: t }); }))]), tb])]));
+            box.appendChild(ints);
+            var tab = h('textarea', { className: 'mv-code', readonly: true, 'aria-label': 'Custom Tabs HTML' });
+            tab.value = o.customTabHtml;
+            box.appendChild(h('div', { className: 'mv-card' }, [
+                h('h3', { text: 'Vote tab: manual setup (only if automatic setup is unavailable)' }),
+                h('p', { text: 'Media Vote adds its tab to Custom Tabs automatically when the "Vote tab" toggle is on. If your Custom Tabs version cannot be updated automatically: Dashboard → Plugins → Custom Tabs → add a tab, title "Vote", and paste this HTML as its content. Save, then reload.' }),
+                tab
+            ]));
+            box.appendChild(h('div', { className: 'mv-card' }, [
+                h('h3', { text: 'Server' }),
+                h('p', { text: 'Time zone: ' + o.timeZone + (o.timeZoneFound ? '' : ' (configured zone not found, using UTC!)') + ' · server time ' + o.nowLocal }),
+                h('p', { text: 'Jellyfin runs as ' + o.processUser + '. Vote data: ' + o.dataDirectory }),
+                h('p', { className: 'mv-muted', text: 'Standalone voting page: ' + ApiClient.getUrl('MediaVote/vote') })
+            ]));
+        }
+
+        // ---------------- audit
+        function loadAudit() {
+            api('GET', 'Audit?max=500').then(function (rows) {
+                var tb = $('#mvAudit');
+                tb.innerHTML = '';
+                rows.forEach(function (r) { tb.appendChild(h('tr', {}, [h('td', { text: r.timeLocal }), h('td', { text: r.action }), h('td', { text: r.actor }), h('td', { text: r.details })])); });
+                if (!rows.length) { tb.appendChild(h('tr', {}, [h('td', { colspan: '4', text: 'Empty.' })])); }
+            }, fail);
+        }
+
+        page.addEventListener('pageshow', function () {
+            loading(true);
+            Promise.all([loadOverview(), loadSettings()]).then(function () { loading(false); }, function () { loading(false); });
+        });
+    })();
+    </script>
+</div>
+</body>
+</html>

@@ -14,6 +14,7 @@ using Jellyfin.Plugin.MediaVote.Storage;
 using Jellyfin.Plugin.MediaVote.Web;
 using MediaBrowser.Common.Api;
 using MediaBrowser.Common.Configuration;
+using MediaBrowser.Controller.Library;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
@@ -72,6 +73,9 @@ public sealed class SettingsDto
 
     public List<Guid> ProtectedItemIds { get; set; } = new();
 
+    /// <summary>Display names for <see cref="ProtectedItemIds"/> (output only).</summary>
+    public Dictionary<Guid, string> ProtectedItemNames { get; set; } = new();
+
     public List<string> ProtectedLibraryIds { get; set; } = new();
 
     public string RadarrUrl { get; set; } = string.Empty;
@@ -124,6 +128,7 @@ public sealed class MediaVoteAdminController : MediaVoteControllerBase
     private readonly WebInjectionService _injection;
     private readonly EntryPointRegistrar _registrar;
     private readonly IApplicationPaths _paths;
+    private readonly ILibraryManager _library;
 
     public MediaVoteAdminController(
         VoteService votes,
@@ -133,9 +138,11 @@ public sealed class MediaVoteAdminController : MediaVoteControllerBase
         ExternalServiceFactory external,
         WebInjectionService injection,
         EntryPointRegistrar registrar,
-        IApplicationPaths paths)
+        IApplicationPaths paths,
+        ILibraryManager library)
     {
         _paths = paths;
+        _library = library;
         _votes = votes;
         _users = users;
         _catalog = catalog;
@@ -181,6 +188,8 @@ public sealed class MediaVoteAdminController : MediaVoteControllerBase
         {
             nowUtc = _votes.Clock.UtcNow,
             nowLocal = LocalText(_votes.Clock.UtcNow, zone),
+            defaultDeadlineInput = TimeZoneHelper.UtcToLocal(_votes.Clock.UtcNow, zone).Date.AddDays(7).AddHours(20).ToString("yyyy-MM-ddTHH:mm", CultureInfo.InvariantCulture),
+            customTabHtml = EntryPointRegistrar.TabHtml(),
             timeZone = zone.Id,
             timeZoneFound = !string.Equals(zone.Id, "UTC", StringComparison.Ordinal) || string.Equals(Config.TimeZoneId, "UTC", StringComparison.OrdinalIgnoreCase),
             injection = _injection.Status,
@@ -369,6 +378,7 @@ public sealed class MediaVoteAdminController : MediaVoteControllerBase
             ResultBannerDays = c.ResultBannerDays,
             UsePlaybackReporting = c.UsePlaybackReporting,
             ProtectedItemIds = c.ProtectedItemIds.ToList(),
+            ProtectedItemNames = c.ProtectedItemIds.Distinct().ToDictionary(id => id, id => _library.GetItemById(id)?.Name ?? "(missing) " + id),
             ProtectedLibraryIds = c.ProtectedLibraryIds.ToList(),
             RadarrUrl = c.RadarrUrl,
             RadarrApiKey = Mask(c.RadarrApiKey),
