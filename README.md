@@ -596,7 +596,7 @@ Do these **in order**. The first steps are the safest. Stop at the first problem
    - `https://<server>/MediaVote/client.js` returns only a comment;
    - `/MediaVote/vote` shows nothing for a non-admin.
 
-   Then `rm` the file, restart, and check the banner is gone.
+   Then `rm /DATA/AppData/jellyfin/config/data/mediavote/DISABLE`, restart, and check the Status tab no longer says "Disabled by file".
 5. **Admin page:** *New vote → Selected users* lists **all** users, disabled ones marked; search, select all/none and the count work. Save settings works. Errors, if any, show readable text.
 6. **Test vote (Notify only)** for yourself only. Vote on the standalone page as admin. Close it early and check the report. Nothing is deleted and nothing changes in Radarr/Sonarr/Jellyseerr.
 7. **Banner on** (preview mode): hard-refresh. As admin, the banner is the top element of the home page, above Media Bar and HSS, and the overlay opens and votes. As a non-admin (private window, phone app): nothing at all. Other plugins unaffected.
