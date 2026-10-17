@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.Mvc;
 namespace Jellyfin.Plugin.MediaVote.Api;
 
 /// <summary>Shared helpers. JSON in and out uses our own camelCase options, independent of Jellyfin's global settings.</summary>
+[MediaVoteErrorFilter]
 public abstract class MediaVoteControllerBase : ControllerBase
 {
     internal static readonly JsonSerializerOptions Options = CreateOptions();

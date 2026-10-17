@@ -235,6 +235,20 @@ public sealed class ResolutionExecutor
 
     private (MediaItemSnapshot? Item, string? Problem) Preflight(Guid itemId)
     {
+        try
+        {
+            return PreflightCore(itemId);
+        }
+#pragma warning disable CA1031 // a lookup failure is a pre-flight failure: nothing gets deleted
+        catch (Exception ex)
+#pragma warning restore CA1031
+        {
+            return (null, "Pre-flight check could not run: " + ErrorText.Describe(ex));
+        }
+    }
+
+    private (MediaItemSnapshot? Item, string? Problem) PreflightCore(Guid itemId)
+    {
         var item = _media.GetItem(itemId);
         if (item is null)
         {
@@ -258,7 +272,19 @@ public sealed class ResolutionExecutor
     private async Task ReportAsync(ItemOutcome outcome, CancellationToken ct)
     {
         outcome.Status = ItemOutcomeStatus.Reported;
-        var item = _media.GetItem(outcome.ItemId);
+        MediaItemSnapshot? item;
+        try
+        {
+            item = _media.GetItem(outcome.ItemId);
+        }
+#pragma warning disable CA1031
+        catch (Exception ex)
+#pragma warning restore CA1031
+        {
+            outcome.Message = "Could not read this item from Jellyfin: " + ErrorText.Describe(ex);
+            return;
+        }
+
         if (item is null)
         {
             outcome.Message = "The item no longer exists in Jellyfin.";
@@ -272,7 +298,18 @@ public sealed class ResolutionExecutor
             notes.Add("Protected: would never be deleted.");
         }
 
-        var perm = _media.CheckDeletePermission(item);
+        PermissionCheck perm;
+        try
+        {
+            perm = _media.CheckDeletePermission(item);
+        }
+#pragma warning disable CA1031
+        catch (Exception ex)
+#pragma warning restore CA1031
+        {
+            perm = new PermissionCheck(false, ErrorText.Describe(ex));
+        }
+
         if (!perm.Ok)
         {
             notes.Add("Write permission problem: " + perm.Problem);

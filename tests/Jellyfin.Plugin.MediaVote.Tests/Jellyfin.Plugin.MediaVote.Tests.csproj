@@ -13,8 +13,10 @@
     <PackageReference Include="xunit" Version="2.9.2" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
     <!-- The plugin excludes Jellyfin runtime assets; tests need them to load the types. -->
-    <PackageReference Include="Jellyfin.Controller" Version="10.11.0" />
-    <PackageReference Include="Jellyfin.Model" Version="10.11.0" />
+    <PackageReference Include="Jellyfin.Controller" Version="10.11.10" />
+    <PackageReference Include="Jellyfin.Model" Version="10.11.10" />
+    <!-- Test-only: File Transformation 3.0.0.0 deserialises callback payloads with Newtonsoft.Json 13.0.1. -->
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.1" />
   </ItemGroup>
 
   <ItemGroup>

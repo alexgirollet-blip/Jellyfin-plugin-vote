@@ -28,6 +28,50 @@
     var STATUS_TTL = 20000;
     var UI_ATTR = 'data-mediavote-ui';
 
+    // ------------------------------------------------------------------ failure guard
+    // Media Vote must never break Jellyfin: every handler runs inside safe(); after MAX_FAILURES errors
+    // (or MAX_STATUS_FAILURES failed status calls) everything stops: observers, timers and listeners are removed.
+    var MAX_FAILURES = 5;
+    var MAX_STATUS_FAILURES = 3;
+    var guard = { failures: 0, statusFailures: 0, dead: false, observer: null, timers: [], listeners: [] };
+
+    function shutdown(reason) {
+        if (guard.dead) { return; }
+        guard.dead = true;
+        try { if (guard.observer) { guard.observer.disconnect(); } } catch (e) { /* ignore */ }
+        guard.timers.forEach(function (id) { try { clearTimeout(id); } catch (e) { /* ignore */ } });
+        guard.timers = [];
+        guard.listeners.forEach(function (l) { try { l[0].removeEventListener(l[1], l[2], l[3]); } catch (e) { /* ignore */ } });
+        guard.listeners = [];
+        try { console.info('Media Vote: stopped (' + reason + '). Jellyfin itself is not affected.'); } catch (e) { /* ignore */ }
+    }
+
+    function fail(err) {
+        guard.failures++;
+        try { console.warn('Media Vote: error ' + guard.failures + '/' + MAX_FAILURES, err); } catch (e) { /* ignore */ }
+        if (guard.failures >= MAX_FAILURES) { shutdown('too many errors'); }
+    }
+
+    function safe(fn) {
+        return function () {
+            if (guard.dead) { return undefined; }
+            try { return fn.apply(this, arguments); } catch (e) { fail(e); return undefined; }
+        };
+    }
+
+    function listen(target, type, fn, options) {
+        var handler = safe(fn);
+        target.addEventListener(type, handler, options);
+        guard.listeners.push([target, type, handler, options]);
+    }
+
+    function later(fn, ms) {
+        var id = setTimeout(safe(fn), ms);
+        guard.timers.push(id);
+        if (guard.timers.length > 64) { guard.timers.splice(0, 32); }
+        return id;
+    }
+
     // ------------------------------------------------------------------ small helpers
 
     function el(tag, attrs, children) {
@@ -190,6 +234,7 @@
             return data;
         }, function (e) {
             statusCache.pending = null;
+            guard.statusFailures++; // counted once per failed request, however many callers share it
             throw e;
         });
         return statusCache.pending;
@@ -239,6 +284,11 @@
     var keyHandlers = [];
 
     function keyGuard(e) {
+        if (guard.dead) { return; }
+        try { keyGuardCore(e); } catch (err) { fail(err); }
+    }
+
+    function keyGuardCore(e) {
         var t = e.target;
         if (!t || !t.closest || !t.closest('[' + UI_ATTR + ']')) { return; }
         e.stopPropagation();
@@ -943,12 +993,21 @@
         return null;
     }
 
+    /** True when the server says Media Vote must show nothing to this user (kill switch, or preview mode for a non-admin). */
+    function statusSaysHidden(status) {
+        return !status || status.disabled === true || status.hidden === true;
+    }
+
     /** Ensures the banner is present exactly once, as the first child of the home content, or absent. */
     function placeBanner() {
         var status = bannerState.status;
-        var container = findHomeContainer();
         var existing = document.getElementById('mediavote-banner');
-        if (!status || !status.entryPoints || !status.entryPoints.banner || !container) {
+        if (statusSaysHidden(status) || !status.entryPoints || !status.entryPoints.banner) {
+            if (existing) { existing.remove(); }
+            return;
+        }
+        var container = findHomeContainer();
+        if (!container) {
             if (existing) { existing.remove(); }
             return;
         }
@@ -968,26 +1027,37 @@
     }
 
     function refreshBanner(force) {
-        if (!webConn.ready()) { return; }
-        if (!isHomeRoute()) { removeBanner(); return; }
+        if (guard.dead || !webConn.ready()) { return; }
         var api = Api(webConn);
-        loadCss(webConn);
-        getStatus(api, force).then(function (status) {
+        getStatus(api, force).then(safe(function (status) {
+            guard.statusFailures = 0;
+            if (statusSaysHidden(status)) {
+                // Disabled on the server, or preview mode and this user is not an admin: render nothing, stop all work.
+                removeBanner();
+                shutdown(status && status.disabled ? 'disabled on the server' : 'preview mode: visible to administrators only');
+                return;
+            }
             var changed = JSON.stringify(status.active) + JSON.stringify(status.lastResult) !== JSON.stringify(bannerState.status && bannerState.status.active) + JSON.stringify(bannerState.status && bannerState.status.lastResult);
             bannerState.status = status;
-            if (changed) { removeBanner(); }
-            placeBanner();
-        }, function () { /* keep the page usable; try again on next navigation */ });
+            if (status.entryPoints && (status.entryPoints.banner || status.entryPoints.tab)) { loadCss(webConn); }
+            if (!isHomeRoute()) { removeBanner(); } else {
+                if (changed) { removeBanner(); }
+                placeBanner();
+            }
+            scan();
+        }), function () {
+            if (guard.statusFailures >= MAX_STATUS_FAILURES) { shutdown('the server did not answer'); }
+        });
     }
 
     var scheduled = false;
 
     function schedule() {
-        if (scheduled) { return; }
+        if (scheduled || guard.dead) { return; }
         scheduled = true;
-        setTimeout(function () {
+        later(function () {
             scheduled = false;
-            if (!webConn.ready()) { return; }
+            if (!webConn.ready() || !bannerState.status) { return; }
             placeBanner();
             scan();
         }, 150);
@@ -1007,59 +1077,76 @@
     // ------------------------------------------------------------------ mount points (Custom Tabs tab, Plugin Pages page)
 
     function scan() {
-        var conn = window.MediaVote && window.MediaVote.__standalone ? window.MediaVote.__standalone : webConn;
+        if (guard.dead) { return; }
+        var standalone = window.MediaVote && window.MediaVote.__standalone;
+        var conn = standalone || webConn;
         if (!conn.ready()) { return; }
+        // In jellyfin-web, mount only once the server has confirmed this user may see Media Vote.
+        if (!standalone && statusSaysHidden(bannerState.status)) { return; }
         var nodes = document.querySelectorAll('[data-mediavote-mount]:not([data-mediavote-mounted])');
         if (!nodes.length) { return; }
         loadCss(conn);
         Array.prototype.forEach.call(nodes, function (node) {
-            node.setAttribute('data-mediavote-mounted', '1');
-            VoteApp(node, Api(conn), {
-                mode: 'page',
-                navigate: conn.inApp ? function (href) { window.location.hash = href.replace(/^#/, ''); } : null
-            });
+            try {
+                node.setAttribute('data-mediavote-mounted', '1');
+                node.textContent = ''; // remove the snippet's "Media Vote is loading" fallback text
+                VoteApp(node, Api(conn), {
+                    mode: 'page',
+                    navigate: conn.inApp ? function (href) { window.location.hash = href.replace(/^#/, ''); } : null
+                });
+            } catch (e) { fail(e); }
         });
     }
 
     // ------------------------------------------------------------------ boot
 
     function boot() {
-        document.addEventListener('viewshow', onNavigate);
-        window.addEventListener('hashchange', onNavigate);
-        window.addEventListener('popstate', onNavigate);
-        document.addEventListener('visibilitychange', function () { if (!document.hidden) { refreshBanner(false); } });
-        // Re-check placement after any re-render (Home Screen Sections, Media Bar, tab switches).
-        var mo = new MutationObserver(function (records) {
+        listen(document, 'viewshow', onNavigate);
+        listen(window, 'hashchange', onNavigate);
+        listen(window, 'popstate', onNavigate);
+        listen(document, 'visibilitychange', function () { if (!document.hidden) { refreshBanner(false); } });
+        // Re-check placement and late mount points after any re-render (Home Screen Sections, Media Bar, Custom Tabs).
+        guard.observer = new MutationObserver(safe(function (records) {
             for (var i = 0; i < records.length; i++) {
                 var t = records[i].target;
                 if (t && t.closest && t.closest('[' + UI_ATTR + ']')) { continue; }
                 schedule();
                 return;
             }
-        });
-        mo.observe(document.body, { childList: true, subtree: true });
+        }));
+        guard.observer.observe(document.body, { childList: true, subtree: true });
+        var waited = 0;
         (function waitForLogin() {
+            if (guard.dead) { return; }
             if (webConn.ready()) { onNavigate(); return; }
-            setTimeout(waitForLogin, 500);
+            waited += 1;
+            later(waitForLogin, waited < 120 ? 500 : 5000);
         })();
     }
 
     window.MediaVote = {
         __loaded: true,
         version: VERSION,
-        scan: scan,
-        refresh: function () { statusCache.at = 0; refreshBanner(true); },
-        open: function () { if (webConn.ready()) { openOverlay(webConn); } },
+        scan: safe(scan),
+        refresh: safe(function () { statusCache.at = 0; refreshBanner(true); }),
+        open: safe(function () { if (webConn.ready() && !statusSaysHidden(bannerState.status)) { openOverlay(webConn); } }),
         /** Used by the standalone page: mounts the app with a custom connection. */
         mountStandalone: function (container, conn) {
             window.MediaVote.__standalone = conn;
             loadCss(conn);
             return VoteApp(container, Api(conn), { mode: 'page' });
-        }
+        },
+        /** For diagnostics: whether the script stopped itself. */
+        stopped: function () { return guard.dead; }
     };
 
     if (!window.__mediavoteStandalone) {
-        if (document.body) { boot(); }
-        else { document.addEventListener('DOMContentLoaded', boot); }
+        try {
+            if (document.body) { boot(); }
+            else { document.addEventListener('DOMContentLoaded', safe(boot)); }
+        } catch (e) {
+            fail(e);
+            shutdown('start-up failed');
+        }
     }
 })();

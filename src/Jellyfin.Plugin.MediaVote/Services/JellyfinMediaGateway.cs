@@ -30,14 +30,14 @@ public sealed class JellyfinMediaGateway : IMediaGateway
 
     public MediaItemSnapshot? GetItem(Guid itemId)
     {
-        var item = _libraryManager.GetItemById(itemId);
+        var item = JellyfinCall.Run("look up an item", () => _libraryManager.GetItemById(itemId));
         if (item is not (Movie or Series))
         {
             return null;
         }
 
-        var paths = item.GetDeletePaths().Select(p => p.FullName).Distinct().ToList();
-        var libraries = _libraryManager.GetCollectionFolders(item);
+        var paths = JellyfinCall.Run("work out the files of " + item.Name, () => item.GetDeletePaths().Select(p => p.FullName).Distinct().ToList());
+        var libraries = JellyfinCall.Run("find the library of " + item.Name, () => _libraryManager.GetCollectionFolders(item));
         var protectedLibs = new HashSet<string>(Config.ProtectedLibraryIds, StringComparer.OrdinalIgnoreCase);
         bool isProtected = Config.ProtectedItemIds.Contains(item.Id)
             || libraries.Any(l => protectedLibs.Contains(l.Id.ToString("N", CultureInfo.InvariantCulture)));
@@ -68,12 +68,16 @@ public sealed class JellyfinMediaGateway : IMediaGateway
 
     public void Delete(Guid itemId)
     {
-        var item = _libraryManager.GetItemById(itemId) ?? throw new InvalidOperationException("Item no longer exists.");
+        var item = JellyfinCall.Run("look up an item", () => _libraryManager.GetItemById(itemId)) ?? throw new InvalidOperationException("Item no longer exists.");
         if (item is not (Movie or Series))
         {
             throw new InvalidOperationException("Only whole movies and series can be deleted by a vote.");
         }
 
-        _libraryManager.DeleteItem(item, new DeleteOptions { DeleteFileLocation = true }, true);
+        JellyfinCall.Run("delete " + item.Name, () =>
+        {
+            _libraryManager.DeleteItem(item, new DeleteOptions { DeleteFileLocation = true }, true);
+            return true;
+        });
     }
 }

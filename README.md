@@ -2,98 +2,226 @@
 
 Let your users vote on which movies and shows to remove from your Jellyfin server.
 
-An administrator starts a vote for selected users. While it is open, each eligible user sees a banner at the top of their Jellyfin home page; they can also use a **Vote** tab or a **Vote** sidebar page. Users spend a fixed number of votes on whole movies and whole series. When the deadline passes, the top **N** titles are either **reported to the admin** (the default) or **deleted automatically**: from Jellyfin, from disk, and with the matching Radarr/Sonarr/Jellyseerr entries unmonitored or excluded so nothing is downloaded again.
+An administrator starts a vote for selected users. Users vote from a banner on their home page, a **Vote** tab, a **Vote** sidebar page or a standalone page. When the deadline passes, the top **N** titles are either **reported to the admin** (the default) or **deleted automatically**: from Jellyfin, from disk, and with the matching Radarr/Sonarr/Jellyseerr entries handled so nothing is downloaded again.
 
-- **Target:** Jellyfin **10.11.x** (`targetAbi 10.11.0.0`, .NET 9). Compiled against `Jellyfin.Controller`/`Jellyfin.Model` **10.11.0**, the oldest 10.11 package, so the same build loads on 10.11.0 through every later 10.11.x, including the linuxserver/jellyfin:10.11.1 image.
-- **Clients:** the official Jellyfin app on iPhone, iPad and Android; desktop browsers; Jellyfin Desktop. All of these load the server's jellyfin-web.
-- **Status:** feature-complete for 10.11. It has **not yet been tested on a live server or real devices**; see [What has and has not been tested](#what-has-and-has-not-been-tested).
+> ## ⚠️ Read this first
+>
+> - **Version 1.0.1.0 requires Jellyfin 10.11.10.** It is built against the 10.11.10 packages with `targetAbi 10.11.10.0`. Jellyfin changes plugin APIs even inside 10.11.x, so a build only works on the Jellyfin version it was built for. See [Jellyfin version requirement](#jellyfin-version-requirement).
+> - **1.0.0.0 was withdrawn.** It broke servers: user lists failed with HTTP 500, and its Vote tab in Custom Tabs blanked the home page. It has been removed from the plugin repository. **If you installed it, do [Upgrading from 1.0.0.0](#upgrading-from-1000) first.**
+> - **Safety comes first in 1.0.1.0.** After install, nothing is visible to your users. Every optional entry point is **off**, and **preview mode** shows Media Vote to administrators only until you press **Go live**. A [`DISABLE` file](#emergency-recovery-zimaos--docker) switches everything off instantly.
 
 ---
 
 ## Contents
 
-1. [Install](#install)
-2. [Entry points and how to enable each](#entry-points-and-how-to-enable-each)
-3. [Admin guide](#admin-guide)
-4. [User guide](#user-guide)
-5. [Vote rules (counting, ties, eligibility, deadline)](#vote-rules)
-6. [Resolution and deletion safety](#resolution-and-deletion-safety)
-7. [Radarr, Sonarr and Jellyseerr](#radarr-sonarr-and-jellyseerr)
-8. [Docker / ZimaOS permission notes](#docker--zimaos-permission-notes)
-9. [Supported and unsupported clients](#supported-and-unsupported-clients)
-10. [Compatibility with other plugins](#compatibility-with-other-plugins)
-11. [Extra features: implemented and skipped](#extra-features-implemented-and-skipped)
-12. [Known limitations](#known-limitations)
-13. [What has and has not been tested](#what-has-and-has-not-been-tested)
-14. [Manual test checklist](#manual-test-checklist)
-15. [REST API](#rest-api)
-16. [Development, releases and Jellyfin 12](#development-releases-and-jellyfin-12)
-17. [Sources this plugin relies on](#sources-this-plugin-relies-on)
+1. [Jellyfin version requirement](#jellyfin-version-requirement)
+2. [Upgrading from 1.0.0.0](#upgrading-from-1000)
+3. [Install on a fresh server](#install-on-a-fresh-server)
+4. [Safe test procedure (do this before going live)](#safe-test-procedure-do-this-before-going-live)
+5. [Emergency recovery (ZimaOS / Docker)](#emergency-recovery-zimaos--docker)
+6. [What Media Vote writes, and how to undo it](#what-media-vote-writes-and-how-to-undo-it)
+7. [Entry points](#entry-points)
+8. [The Vote tab (Custom Tabs): manual setup and why](#the-vote-tab-custom-tabs-manual-setup-and-why)
+9. [Admin guide](#admin-guide)
+10. [User guide](#user-guide)
+11. [Vote rules](#vote-rules)
+12. [Resolution and deletion safety](#resolution-and-deletion-safety)
+13. [Radarr, Sonarr and Jellyseerr](#radarr-sonarr-and-jellyseerr)
+14. [Docker / ZimaOS permission notes](#docker--zimaos-permission-notes)
+15. [Supported and unsupported clients](#supported-and-unsupported-clients)
+16. [Compatibility with other plugins](#compatibility-with-other-plugins)
+17. [Extra features: implemented and skipped](#extra-features-implemented-and-skipped)
+18. [Known limitations](#known-limitations)
+19. [What has and has not been tested](#what-has-and-has-not-been-tested)
+20. [Manual test checklist](#manual-test-checklist)
+21. [REST API](#rest-api)
+22. [Development, CI and releases](#development-ci-and-releases)
+23. [Sources this plugin relies on](#sources-this-plugin-relies-on)
 
 ---
 
-## Install
+## Jellyfin version requirement
 
-### Plugin repository URL
+| Media Vote | Built against `Jellyfin.Controller` / `Jellyfin.Model` | `targetAbi` | Runs on |
+|---|---|---|---|
+| **1.0.1.0** | **10.11.10** | **10.11.10.0** | Jellyfin **10.11.10**. CI also confirms the DLL binds against 10.11.11; Jellyfin itself refuses it on anything older than 10.11.10. |
+| 1.0.0.0 (withdrawn) | 10.11.0 | 10.11.0.0 | Broken on 10.11.10 (see below). |
 
-Paste this into **Jellyfin → Dashboard → Plugins → Repositories → +**:
+**Why a build is tied to one Jellyfin version.** A Jellyfin plugin is a .NET DLL that calls Jellyfin's internal classes directly, and Jellyfin does not keep those APIs stable between patch releases. Between 10.11.0 and 10.11.10, ten public members were removed, among them `IUserManager.Users`, which became `IUserManager.GetUsers()`. Media Vote 1.0.0.0 was compiled against 10.11.0, so on a 10.11.10 server .NET threw:
+
+```
+System.MissingMethodException: Method not found:
+'IEnumerable`1<User> MediaBrowser.Controller.Library.IUserManager.get_Users()'
+```
+
+That error happened on every page that lists users and when creating a vote.
+
+**How 1.0.1.0 prevents a repeat:**
+- **CI version check:** fails if the csproj package version, `build.yaml` `targetAbi`, the test packages and the plugin's own "built for" constant disagree (`.github/scripts/check_versions.py`).
+- **CI binary compatibility check** (`tools/ApiCompat`): loads the built DLL together with the real Jellyfin runtime assemblies of the target version and JIT-compiles every method. A missing member fails the build, exactly as it would fail on the server. Run against the released 1.0.0.0 DLL, this tool reproduces the exact `MissingMethodException` from the server log.
+- **CI early warning:** a non-blocking job builds and checks against the **latest** published 10.11.x and reports if it no longer works.
+- **Start-up self-check:** the plugin calls every Jellyfin API it depends on once at start-up and shows the result on the *Status & setup* tab, for example "Users: OK, 16 found", or the exact error. One broken API never stops the plugin or the server.
+
+**Rebuilding for another Jellyfin version** (for example 10.11.11):
+1. Change `<JellyfinPackageVersion>` in `src/Jellyfin.Plugin.MediaVote/Jellyfin.Plugin.MediaVote.csproj`. Change the `Jellyfin.Controller`/`Jellyfin.Model` versions in `tests/Jellyfin.Plugin.MediaVote.Tests/Jellyfin.Plugin.MediaVote.Tests.csproj`. Change `BuiltForJellyfin` in `src/Jellyfin.Plugin.MediaVote/Core/ErrorText.cs`.
+2. Set `targetAbi: "<version>.0"` in `build.yaml`.
+3. Run `python3 .github/scripts/check_versions.py && dotnet build -c Release && dotnet test -c Release`.
+4. Run the binary check:
+   ```sh
+   dotnet build tools/ApiCompat -c Release -p:JellyfinVersion=<version>
+   dotnet tools/ApiCompat/bin/Release/net9.0/ApiCompat.dll src/Jellyfin.Plugin.MediaVote/bin/Release/net9.0/Jellyfin.Plugin.MediaVote.dll
+   ```
+5. Fix anything the compiler or the check reports, bump the plugin version, and release as described in [Publishing a release](#publishing-a-release).
+
+---
+
+## Upgrading from 1.0.0.0
+
+1.0.0.0 wrote a "Vote" tab into **Custom Tabs' own saved settings**. That tab blanks the home screen, even after Media Vote is uninstalled; [why](#the-vote-tab-custom-tabs-manual-setup-and-why). 1.0.1.0 never touches Custom Tabs, so you remove the tab yourself.
+
+1. **Remove the leftover Vote tab.** Go to **Dashboard → Plugins → Custom Tabs**. Delete the tab whose content starts with `<div data-mediavote-mount="tab" class="mediavote-tab-host"></div><script>`, usually titled "Vote", then **Save**. If the dashboard itself is unusable, see [Emergency recovery](#emergency-recovery-zimaos--docker), step 3.
+2. Install 1.0.1.0 as below. Your existing votes are kept: they live in `/config/data/mediavote`.
+3. On first start, 1.0.1.0 **resets** the settings 1.0.0.0 saved: every optional entry point goes off and preview mode goes on. Your Radarr/Sonarr/Jellyseerr settings, protected items and votes are kept.
+4. Open *Status & setup*. A "Custom Tabs check" warning stays there as long as the old tab exists.
+
+---
+
+## Install on a fresh server
+
+**Plugin repository URL.** Paste this into **Jellyfin → Dashboard → Plugins → Repositories → +**:
 
 ```
 https://raw.githubusercontent.com/alexgirollet-blip/Jellyfin-plugin-vote/main/manifest.json
 ```
 
-> **Before the first install:** `manifest.json` lists no versions until the first release has been published. Merge this work into `main`, then publish a release as described in [Publishing a release](#publishing-a-release). The workflow builds the zip, attaches it to a GitHub Release and adds the version to `manifest.json` on `main`. From then on the URL above serves it.
+> The manifest lists no installable version until 1.0.1.0 has been released (merge this PR, then push the tag; see [Publishing a release](#publishing-a-release)). 1.0.0.0 has been removed from it.
 
-### Steps
+1. Make sure Jellyfin is **10.11.10** (*Dashboard → General*, or check that other plugins show 10.11.10.0).
+2. **Dashboard → Plugins → Repositories → +**: name `Media Vote`, the URL above → **Save**.
+3. **Dashboard → Plugins → Catalog → Media Vote** → **Install**.
+4. **Restart Jellyfin** (ZimaOS: restart the Jellyfin app).
+5. Open **Dashboard → Plugins → Media Vote** → **Status & setup** and continue with the [safe test procedure](#safe-test-procedure-do-this-before-going-live).
 
-1. Jellyfin → **Dashboard → Plugins → Repositories** → **+** → Name `Media Vote`, URL as above → **Save**.
-2. **Dashboard → Plugins → Catalog** → **Media Vote** (category *General*) → **Install**.
-3. **Restart Jellyfin.** Plugins are loaded only at start-up. On ZimaOS, restart the Jellyfin app/container; on the server dashboard you can also use **Dashboard → Restart**.
-4. **Recommended:** keep **File Transformation** installed (you already have 3.0.0.0). Media Vote uses it to add its script to the web client without modifying files. Without it, see [Docker / ZimaOS permission notes](#docker--zimaos-permission-notes).
-5. **Desktop browsers:** do a hard refresh (Ctrl+F5 on Windows/Linux, Cmd+Shift+R on macOS), or clear the site data for your Jellyfin address.
-6. **Jellyfin Desktop app:** quit it completely and reopen it.
-7. **Phones and iPads (official Jellyfin app):** you cannot hard-refresh, so **fully close the app** (swipe it away from the app switcher) and reopen it. If the banner still does not appear, **sign out and sign back in** in the app. Tell your friends to do the same after every plugin install or update.
-8. Open **Dashboard → Plugins → Media Vote** (also listed in the dashboard menu as *Media Vote*). The **Status & setup** tab shows whether the script injection worked and which optional plugins were detected.
+At this point nothing is visible to your users and nothing has been injected into the web client: every optional entry point is off and preview mode is on. Only the admin page and the standalone page `/MediaVote/vote` work, and in preview mode the standalone page shows nothing to non-admins either.
 
-**Updating:** the same as installing. Install the new version from the catalog, restart Jellyfin, then hard-refresh browsers and close/reopen the apps. Vote data is stored in `<Jellyfin data>/mediavote` (`/config/data/mediavote` in the linuxserver image), outside the versioned plugin folder, so it survives updates.
+**After turning an entry point on, or updating:**
+- **Browsers:** hard refresh (Ctrl+F5 / Cmd+Shift+R).
+- **Jellyfin Desktop app:** quit it and reopen it.
+- **Phones and iPads (official app):** fully close the app (swipe it away) and reopen it. If something still doesn't appear, sign out and back in.
 
 ---
 
-## Entry points and how to enable each
+## Safe test procedure (do this before going live)
 
-Every entry point opens **the same voting component** (`VoteApp` in `client.js`), so they all behave identically. Each one is a toggle under **Media Vote → Settings → Entry points**, and all are on by default. The banner can only be turned off if the Vote tab, the sidebar page or the standalone page is on; the server enforces this rule too.
+Follow the steps in order and stop at the first problem. If anything ever looks wrong for your users, create the `DISABLE` file ([Emergency recovery](#emergency-recovery-zimaos--docker), step 1).
 
-| Entry point | Needs | How it is set up |
-|---|---|---|
-| **Home banner** (primary) | File Transformation (recommended) or a writable `index.html` | Automatic. The banner is the first element of the home tab and sits above Media Bar's slideshow and Home Screen Sections' rows. |
-| **"Vote" tab** on the home tab bar | Custom Tabs plugin | Automatic when Custom Tabs is detected (see below). Manual copy-paste fallback is on the *Status & setup* tab. |
-| **"Vote" page** in the sidebar (under *Plugin Settings*) | Plugin Pages plugin | Automatic, through Plugin Pages' `PluginInterface.RegisterPage`. |
-| **"Media Vote: current leaders"** row | Home Screen Sections plugin | Registered automatically through `PluginInterface.RegisterSection`. You must **enable the section in Home Screen Sections' settings** (HSS shows only enabled sections). |
-| **Standalone page** `https://<server>/MediaVote/vote` | Nothing | Always available while its toggle is on. It has its own Jellyfin sign-in form, so it works even without File Transformation, Custom Tabs or Plugin Pages. |
+1. **Status & setup:** all *Jellyfin API self-check* lines should be **OK** ("Users: OK, N found", "Libraries: OK", and so on). If one fails, it shows the exact error. Report it, and don't turn on entry points yet.
+2. **Prove the kill switch works:**
+   1. On the ZimaOS host, run
+      ```sh
+      touch /DATA/AppData/jellyfin/config/data/mediavote/DISABLE
+      ```
+      then restart Jellyfin. *Status & setup* should show a red **"Disabled by file"** banner.
+   2. Remove the file again
+      ```sh
+      rm /DATA/AppData/jellyfin/config/data/mediavote/DISABLE
+      ```
+      and restart Jellyfin.
+3. **Create a test vote** in *New vote*. Leave **Notify only** on, select only yourself or a test account, and pick a couple of titles. Open `/MediaVote/vote` as an admin and vote.
+4. **Turn on ONE entry point** (*Settings → Entry points*), save, and hard-refresh your browser. Start with the **home banner**, which needs File Transformation. Check:
+   - the home page, Media Bar, Home Screen Sections, Jellyfin Enhanced and your existing Custom Tabs all still work;
+   - you, as an admin, see the banner;
+   - *Status & setup* shows "Registered with File Transformation (self-test passed)".
+5. Log in as a **non-admin** (another browser or a private window). You must see **nothing** from Media Vote: preview mode.
+6. Repeat steps 4–5 for the next entry point you want:
+   - **Sidebar page (Plugin Pages):** while in preview mode it is hidden from everyone. Open it directly at `#/userpluginsettings.html?pageUrl=/MediaVote/page`.
+   - **Current leaders row (Home Screen Sections):** also enable it in HSS's own settings.
+7. **Go live:** *Status & setup → Go live* → confirm. Your users now see the enabled entry points. Ask them to close and reopen the app.
+8. **Only after going live**, add the Vote tab by hand if you want it; see [The Vote tab](#the-vote-tab-custom-tabs-manual-setup-and-why).
+9. Before your first **Delete automatically** vote, run **Dry run** on it and check the paths, sizes and permission messages.
 
-The tab, the page and the section are static entries that every user sees. When no vote is open, or the user is not in the current vote, they show **"No active vote right now"** (or "You are not taking part in the current vote") plus the last result, if one exists. They never show an empty or broken page.
+---
 
-### Custom Tabs details
+## Emergency recovery (ZimaOS / Docker)
 
-Custom Tabs (0.2.x, verified against its source) has **no API for other plugins to register tabs**. It stores its tabs in its own plugin configuration (`Tabs[]` with `Title` and `ContentHtml`) and runs `<script>` tags inside tab HTML.
+Use these from the ZimaOS host shell (SSH, or the ZimaOS terminal). The container's `/config` is `/DATA/AppData/jellyfin/config` on the host.
 
-Media Vote therefore:
-- **Appends one tab**, marked with `data-mediavote-mount`, after your own tabs when the toggle is on.
-- **Never edits or reorders your other tabs**, so their `customTab_N` ids stay the same.
-- **Removes only its own tab** when you turn the toggle off.
-- Changes the tab's title through **Media Vote → Settings → Tab title**.
-
-If you delete Media Vote's tab inside Custom Tabs while the toggle is on, it is added again at the next restart. Turn the toggle off instead.
-
-**Manual fallback** (if automatic setup reports a problem):
-1. Go to **Dashboard → Plugins → Custom Tabs** → add a tab with the title `Vote`.
-2. Paste this HTML as its content (also shown, ready to copy, on the *Status & setup* tab):
-
-   ```html
-   <div data-mediavote-mount="tab" class="mediavote-tab-host"></div><script>(function(){if(window.MediaVote&&window.MediaVote.scan){window.MediaVote.scan();return;}if(document.getElementById('mediavote-loader'))return;var s=document.createElement('script');s.id='mediavote-loader';s.src=(window.ApiClient?window.ApiClient.getUrl('MediaVote/client.js'):'../MediaVote/client.js');document.head.appendChild(s);})();</script>
+1. **Switch Media Vote off without uninstalling it (kill switch):**
+   ```sh
+   touch /DATA/AppData/jellyfin/config/data/mediavote/DISABLE
    ```
+   Then restart Jellyfin. While the file exists:
+   - nothing is injected into the web client and no entry point is registered;
+   - the served `client.js` is an empty script, so even a cached page does nothing;
+   - users see nothing, and voting calls are refused;
+   - **vote resolution and any deletion are paused**.
 
-3. Save, then reload the web client (or close and reopen the apps).
+   The admin page keeps working. To re-enable, run `rm /DATA/AppData/jellyfin/config/data/mediavote/DISABLE` and restart. Inside the container, the file is `/config/data/mediavote/DISABLE`.
+2. **Remove the plugin completely, even if Jellyfin's dashboard doesn't load:**
+   ```sh
+   docker stop jellyfin            # or stop the app in ZimaOS
+   ls /DATA/AppData/jellyfin/config/data/plugins/        # find "Media Vote_1.0.x.x"
+   rm -rf "/DATA/AppData/jellyfin/config/data/plugins/Media Vote_1.0.1.0"
+   docker start jellyfin
+   ```
+   Use the folder name you actually see; the container name may differ in ZimaOS. Optional extras:
+   - `/DATA/AppData/jellyfin/config/data/plugins/configurations/Jellyfin.Plugin.MediaVote.xml` holds the settings, including API keys;
+   - `/DATA/AppData/jellyfin/config/data/mediavote/` holds votes and the audit log.
+
+   Delete them too if you want a clean slate.
+3. **Home screen blank because of a Custom Tabs tab** (1.0.0.0's Vote tab, or *any* tab containing an apostrophe, backslash or `$`; see [why](#the-vote-tab-custom-tabs-manual-setup-and-why)):
+   - **If the dashboard works:** go to *Dashboard → Plugins → Custom Tabs*, delete or fix the tab, then Save.
+   - **If it doesn't:**
+     1. Stop Jellyfin.
+     2. Open `/DATA/AppData/jellyfin/config/data/plugins/configurations/Jellyfin.Plugin.CustomTabs.xml` in a text editor.
+     3. Delete the whole `<TabConfig>…</TabConfig>` block whose `ContentHtml` contains `data-mediavote-mount`. Make a backup copy of the file first.
+     4. Start Jellyfin.
+
+     (Custom Tabs' file name and layout are its own; check before editing.)
+
+---
+
+## What Media Vote writes, and how to undo it
+
+1.0.1.0 writes **nothing** into Jellyfin's web files and **never** changes another plugin's saved settings. A unit test fails the build if code that could write another plugin's configuration is added back.
+
+| What | Where | Undo |
+|---|---|---|
+| Votes, results, audit log | `/config/data/mediavote/` (`votes.json`, `audit.jsonl`) | Delete the folder. |
+| Its own settings, including API keys | `/config/data/plugins/configurations/Jellyfin.Plugin.MediaVote.xml` (Jellyfin's standard plugin config) | Delete the file. |
+| `index.html` script tag | **In memory only**, through File Transformation, and only while the banner or the Vote-tab toggle is on | Turn both off, uninstall, or create `DISABLE`. Nothing on disk to undo. |
+| Plugin Pages sidebar entry | **In memory only** (`RegisterPage`), only while that entry point is on | Removed automatically when turned off or on uninstall (`OnUninstalling` calls `RemovePage`). |
+| Home Screen Sections row | **In memory only** (`RegisterSection`). HSS has no removal API, so the row returns nothing when off. | Disappears after a Jellyfin restart. |
+| Custom Tabs | **Nothing.** You add and remove the Vote tab yourself. | Delete the tab in Custom Tabs. |
+| Media files, Radarr/Sonarr/Jellyseerr entries | Only when a **Delete automatically** vote resolves (never in Notify only or Dry run) | Not undoable: that is the purpose of the feature. Use Notify only first. |
+| Permission probe file | Only on **Windows** servers: a temporary `.mediavote-probe-*` file created and deleted in a media folder during the write check. On Linux, `access(2)` is used and nothing is written. | — |
+
+On uninstall, Jellyfin calls the plugin's `OnUninstalling()`. Media Vote then removes its File Transformation registration (`RemoveTransformation`) and its Plugin Pages entry (`RemovePage`). Votes and settings are kept, in case you reinstall. Delete them as shown above if you don't want them.
+
+*1.0.0.0 only:* if File Transformation was missing, 1.0.0.0 could add a `data-mediavote-script` tag to the web client's `index.html` and keep a backup `index.html.mediavote-backup`. 1.0.1.0 detects such a leftover tag and tells you on the Status tab. In the linuxserver image that file isn't writable, so it is very unlikely you have it.
+
+---
+
+## Entry points
+
+All entry points open the same voting screen. Fresh installs and upgrades from 1.0.0.0 start with every optional entry point **off**.
+
+| Entry point | Default | Needs | Notes |
+|---|---|---|---|
+| Admin page (Dashboard → Plugins → Media Vote) | always | — | Works even with the `DISABLE` file. |
+| Standalone page `/MediaVote/vote` | on | — | Has its own Jellyfin sign-in and injects nothing. In preview mode, non-admins see nothing. |
+| Home banner | **off** | File Transformation | Turning it on registers the `index.html` transformation, after its self-test passes. |
+| Vote tab | **off** | Custom Tabs; **you add the tab by hand** | Tick "I have added the Vote tab" so the script is loaded for it. See below. |
+| Sidebar page | **off** | Plugin Pages | Plugin Pages cannot show a page to admins only, so it is hidden from everyone in preview mode. |
+| Current leaders row | **off** | Home Screen Sections | Also enable the section in HSS's settings. Shows nothing to non-admins in preview mode. |
+
+**Preview mode** is on by default:
+- the client script renders nothing for non-admins and stops all its work for them (no observers, no timers);
+- the server refuses non-admin voting calls (`403 preview`);
+- the HSS row returns nothing for non-admins;
+- the sidebar page is hidden.
+
+**Go live** (*Status & setup*, with in-page confirmation) turns preview mode off. **Back to preview** turns it on again.
 
 ### How the banner stays on top
 
@@ -106,9 +234,45 @@ These placement rules were checked against each plugin's current source:
 
 ---
 
+---
+
+## The Vote tab (Custom Tabs): manual setup and why
+
+**Root cause of the 1.0.0.0 blank home screen.** This was verified against the Custom Tabs **0.2.10.0** source and the real jellyfin-web **10.11.10** build.
+- Custom Tabs 0.2.x does **not** render tabs at runtime. Its File Transformation callback `TransformationPatches.HomeHtmlChunk` pastes every tab's raw `ContentHtml` into jellyfin-web's compiled `home-html.<hash>.chunk.js`.
+- In that file, the home page template is a **single-quoted JavaScript string**: `e.default='<div id="indexPage" …'`.
+- The insertion uses .NET `Regex.Replace`, and only the literal `'undefined'` is escaped.
+- 1.0.0.0's tab contained an inline `<script>` full of single quotes, such as `getElementById('mediavote-loader')`. The first `'` ended the JavaScript string, so the home page module failed to parse (`SyntaxError: Unexpected identifier 'mediavote'`) and the home screen rendered blank.
+- Because the tab lived in **Custom Tabs' own settings**, it kept breaking the page after Media Vote was uninstalled.
+- Scripts in tab HTML are never executed by 0.2.x anyway.
+- `tests/client/customtabs-chunk.js` reproduces this on the real 10.11.10 chunk (`tests/client/fixtures/`).
+
+The same thing happens with **any** Custom Tabs tab, not only Media Vote's, if its HTML contains a single quote `'` (even in normal text such as "don't"), a backslash `\`, or a `$` sequence. On the *Status & setup* tab, Media Vote's read-only "Custom Tabs check" warns about such tabs.
+
+**Safe manual setup:**
+1. Go live first (otherwise friends see an empty tab).
+2. **Dashboard → Plugins → Custom Tabs → add tab**, with the title `Vote`.
+3. Paste **exactly** this as its content. The *Settings → Vote tab* card has it with a Copy button.
+   ```html
+   <div data-mediavote-mount="tab" class="mediavote-tab-host">Media Vote is loading. If this stays empty, reload the page.</div>
+   ```
+   It has no script, no single quote, no backslash, no `$` and no line break. The test above proves it keeps the 10.11.10 home page valid.
+4. Save in Custom Tabs. In Media Vote, tick *"I have added the Vote tab to Custom Tabs by hand"* and save.
+5. Reload Jellyfin.
+
+The globally injected Media Vote script finds the mount element by itself, including when Custom Tabs renders or re-renders it late. It replaces the fallback text with the voting screen, or with "No active vote right now" when there is no vote or the user isn't in it.
+
+If the script isn't loaded (both toggles off, the `DISABLE` file, or preview mode for that user), the tab simply shows the plain fallback text. An empty or unmounted tab cannot break the page, because the snippet is plain HTML.
+
+**To remove the tab:** delete it in Custom Tabs and untick the setting.
+
+---
+
 ## Admin guide
 
-Open **Dashboard → Plugins → Media Vote**. The page works on a phone too.
+Open **Dashboard → Plugins → Media Vote**. The page also works on a phone.
+
+**Each section loads on its own.** If one call fails, that section shows the error message and a **Retry** button, and the rest of the page keeps working. Server errors come back as readable text (for example "Jellyfin could not list users: …"), never a bare "HTTP 500".
 
 ### Create a vote (*New vote* tab)
 
@@ -132,6 +296,8 @@ Use **Preview** to see how many titles match, their total size, and the **most d
 
 Only **one vote can be open at a time**. The list of votable titles is frozen when the vote is created.
 
+**Selected users** lists **all** users on the server: enabled and disabled, with disabled accounts clearly marked (they can't vote). It has a search box, **Select all enabled**, **Select none**, and a running count of selected users. If the user list can't be loaded, the picker shows the error and a Retry button.
+
 ### Manage votes (*Votes* tab)
 
 - **Extend:** set a new deadline. **Close now:** resolve immediately. **Cancel:** nothing is deleted, and the votes stay in history. Each of these asks for an in-page confirmation.
@@ -145,14 +311,22 @@ Only **one vote can be open at a time**. The list of votable titles is frozen wh
 
 ### Settings tab
 
-- **Entry points:** see above.
-- **Time zone:** an IANA name, default `Europe/London`.
-- **Closing-soon reminder:** default 24 h before the deadline.
-- **Result banner:** how many days voters see the result banner (default 7).
-- **Playback Reporting:** use its data, on by default and only if that plugin is installed.
-- **Protected libraries and titles:** these are never votable and can never be deleted by a vote. Protection is re-checked right before any deletion.
+- **Entry points:** turn them on one at a time; see [Safe test procedure](#safe-test-procedure-do-this-before-going-live).
+- **Vote tab card:** the exact snippet, a Copy button and step-by-step instructions.
+- **General:** time zone (default `Europe/London`), closing-soon reminder (default 24 h), result banner days (default 7), and Playback Reporting data (on, used only if that plugin is installed).
+- **Protected libraries and titles:** these are never votable and never deleted. Protection is re-checked right before any deletion.
 - **Radarr / Sonarr / Jellyseerr:** see below.
-- **Webhook:** Discord or generic JSON, for *vote opened*, *closing soon* and *results*. The webhook URL is stored masked, like the API keys.
+- **Webhook:** Discord or generic JSON. The URL is stored masked.
+
+### Status & setup tab
+
+- the "Disabled by file" banner when `DISABLE` exists;
+- preview state and the **Go live** / **Back to preview** buttons;
+- the state of every entry point;
+- the **Jellyfin API self-check** (with "Run again");
+- the File Transformation registration state;
+- the read-only **Custom Tabs check** (1.0.0.0 leftover tab, and tabs that would break the home page);
+- detected optional plugins, the server time zone, the process user, the data folder and the kill-switch path.
 
 ---
 
@@ -165,6 +339,8 @@ Only **one vote can be open at a time**. The list of votable titles is frozen wh
 5. You can change your votes until the deadline. After the vote closes, a result banner lists what was removed or flagged; you can dismiss it.
 
 Your votes are **not anonymous**: your name and the time of each vote are stored. Admins always see who voted for what, and other participants see names too unless the admin turned that off.
+
+---
 
 ---
 
@@ -194,11 +370,14 @@ If the server cannot find the time zone, the *Status & setup* tab warns and UTC 
 
 ---
 
+---
+
 ## Resolution and deletion safety
 
 - **When:** a background timer checks every 30 seconds, and once about 20 seconds after start-up. If the server was **offline at the deadline**, the vote is resolved on the next start. The scheduled task *Media Vote: resolve due votes* runs the same check manually, or hourly as a backup.
 - **Resolved only once:** the vote is marked resolved under the store lock before anything is acted on, so overlapping checks cannot resolve it twice.
 - **Crash safety:** if the server stops while winners are being processed, the vote is marked **Interrupted** at the next start and **never retried automatically**. Check the audit log, then use *Retry*.
+- **Kill switch:** while the `DISABLE` file exists, resolution (and therefore any deletion) is paused. A vote whose deadline passed resolves once the file is removed.
 
 ### Order of operations (Delete automatically)
 
@@ -220,6 +399,8 @@ If the server cannot find the time zone, the *Status & setup* tab warns and UTC 
 **Notify only** and **Dry run** never delete anything and never call an external app in a way that changes state; they only use GET lookups.
 
 **Collections:** deleting a movie that belongs to a BoxSet (for example one made by CollectionImport) leaves that collection smaller, or empty if it was the only member. Media Vote does not edit or delete collections. Clean up empty ones in Jellyfin, or let your collection tool rebuild them.
+
+---
 
 ---
 
@@ -245,6 +426,8 @@ These are used only by **Delete automatically**; in Notify only and Dry run they
 
 ---
 
+---
+
 ## Docker / ZimaOS permission notes
 
 The linuxserver/jellyfin image runs Jellyfin as user **`abc`**, whose uid and gid come from the `PUID`/`PGID` container variables (ZimaOS usually uses 1000/1000 or the uid of your ZimaOS user). Deleting a title needs **write permission on its folder, everything inside it, and the parent folder**.
@@ -266,17 +449,7 @@ Use **Dry run** before the deadline to see any permission problems in advance.
 3. **External drives formatted exFAT or NTFS** do not store Unix owners. Ownership comes from the mount options (`uid=`, `gid=`, `umask=`). If `chown` "works" but nothing changes, remount the drive with `uid`/`gid` matching PUID/PGID, or reformat it as ext4.
 4. If Radarr/Sonarr import files as another user, make them use the same PUID/PGID (or a shared group with `umask 002`) so new files stay deletable by Jellyfin.
 
-### `index.html` (only if File Transformation is missing)
-
-With **File Transformation** installed (recommended, and already on your server), nothing is written to disk. Without it, Media Vote tries to add its `<script>` tag directly to `index.html` in Jellyfin's web folder. That folder is reported by Jellyfin; in the linuxserver image it is `/usr/share/jellyfin/web/index.html`. Inside the image that file belongs to root and is **not writable** by `abc`. In that case the *Status & setup* tab shows this fix:
-
-1. Install File Transformation and restart. **Or**, as an alternative:
-2. Copy the file out once: `docker cp jellyfin:/usr/share/jellyfin/web/index.html /DATA/AppData/jellyfin/index.html`
-3. Give it to your PUID:PGID: `sudo chown 1000:1000 /DATA/AppData/jellyfin/index.html`
-4. Add the volume `/DATA/AppData/jellyfin/index.html` → `/usr/share/jellyfin/web/index.html` to the container (ZimaOS app settings → Volumes), then restart.
-5. **Remove that volume before upgrading Jellyfin**, or the old web-client page will be kept.
-
-Media Vote keeps one backup (`index.html.mediavote-backup`), only ever adds a single marked tag, and removes its own tag again once File Transformation is available.
+**`index.html`:** 1.0.1.0 never writes to Jellyfin's web folder. The banner and the Vote tab need **File Transformation**. Without it, they are unavailable, while the admin page, the standalone page and the sidebar page still work.
 
 ---
 
@@ -309,31 +482,33 @@ Media Vote keeps one backup (`index.html.mediavote-backup`), only ever adds a si
 
 ---
 
+---
+
 ## Compatibility with other plugins
 
 Media Vote is **purely additive and order-independent**:
-- It registers one File Transformation callback for `index.html`. The callback only inserts its own marked `<script>` once before `</body>`, never replaces the file, and never assumes it runs first or last.
-- **Everything is namespaced `mediavote-`**: element ids, CSS classes, CSS variables, `localStorage` keys (only a non-essential device id on the standalone page) and the `mediavote-status` event. The only global is `window.MediaVote`.
-- **No global CSS:** every selector is scoped to a `.mediavote-*` class. Colours are read at runtime from the active theme (page background, text colour and the theme's primary button colour), so custom themes look right. There is no hard-coded colour scheme.
-- **Nothing is monkey-patched:** no jellyfin-web internals and no other plugin's globals. Only Media Vote's own elements and listeners are added.
-- **Optional integrations are detected at runtime by reflection.** No assembly references other plugins: other plugins' `JObject` parameters are built by calling `Parse` on the parameter type they declare, so Media Vote does not even reference Newtonsoft.Json. The DLL references only Jellyfin 10.11.0 and .NET 9 framework assemblies.
+- It never writes another plugin's settings, and never edits files.
+- It registers one in-memory File Transformation callback for `index.html`, and only while the banner or the Vote tab is on. The callback:
+  - only inserts its own marked `<script>` once before `</body>`;
+  - **never returns less content than it received**: on any problem it returns the original unchanged;
+  - checks the kill switch on every call;
+  - must pass a self-test (sample HTML → original plus exactly one tag) before it is registered.
+- Everything is namespaced `mediavote-`, and the only global is `window.MediaVote`.
+- There is no global CSS, and colours are read from the active theme.
+- Nothing of jellyfin-web or other plugins is patched.
+- The client script wraps every handler in try/catch. After repeated failures it disconnects its observer and timers and stops. A `404`/`500` for `client.js` is harmless.
+- Optional integrations are found at runtime by reflection, so there is no hard dependency on any other plugin, and Media Vote does not reference Newtonsoft.Json.
+- The DLL references only Jellyfin 10.11.10 and .NET 9 framework assemblies.
 
 | Plugin | Notes |
 |---|---|
-| File Transformation 3.0.0.0 | Used for injection via `PluginInterface.RegisterTransformation`. Optional, with an index.html fallback. |
-| Home Screen Sections 3.0.0.0 | The banner sits above HSS's container and survives its re-renders. The optional "current leaders" section is registered via `PluginInterface.RegisterSection` and must be enabled in HSS's settings. |
-| Plugin Pages 3.0.0.0 | Sidebar "Vote" page via `PluginInterface.RegisterPage`. The page's visibility follows the toggle live, through a callback, with no restart. |
-| Custom Tabs 0.2.10.0 | Adds or removes only its own tab in Custom Tabs' configuration (no API exists). Other tabs are never changed. |
-| Media Bar 2.4.13.0 | The banner is placed above the slideshow (`z-index` 11 > slides ≤ 10). The `--mediavote-banner-z` variable can be overridden with your own CSS if needed. |
-| Jellyfin Enhanced 12.7.0.0 | JE registers shortcuts with a **capture-phase `document` keydown listener**, and only ignores INPUT/TEXTAREA. Media Vote adds a `window` capture listener that stops key events **only when they start inside Media Vote's UI**, including `<select>` elements, so JE shortcuts never fire while you use the voting screen or the admin form. Default actions such as typing, Tab and Enter still work. No global shortcuts of its own. |
-| JavaScript Injector 4.0.0.0 | No interaction. If you inject CSS that targets generic elements, it can affect our UI like any page content. |
-| Streamyfin plugin 0.66.0.0 | No interaction (Streamyfin is a native client). |
-| Playback Reporting 17.0.0.0 | Optional, read-only source for play counts. Its SQLite database is read through the SQLite provider Jellyfin already loads; nothing is written to it. If it is missing or its format differs, Media Vote silently uses Jellyfin's user data only. |
-| Reports, DiscontinueWatching, Intro Skipper, Chapter Creator, SkipMe.db, Media Preview, WhisperSubs, metadata providers, CollectionImport | No interaction. Deleted titles disappear from them as with any Jellyfin deletion. CollectionImport collections may become smaller or empty (see above). |
-
-**Known conflicts:** none found from reading the sources.
-- If another script also insists on being the first element of the home tab, the banner stops repositioning after 5 tries and may sit second.
-- Custom CSS that styles generic elements (for example every `button`) can change Media Vote's look.
+| File Transformation 3.0.0.0 | `PluginInterface.RegisterTransformation(JObject)` / `RemoveTransformation(Guid)`. The callback payload `{"contents": …}` is deserialised by FT with Newtonsoft `JObject.ToObject`. Media Vote's `TransformPayload` pins the name with `[DataMember(Name="contents")]`, and a unit test deserialises it with Newtonsoft 13.0.1 exactly as FT does. |
+| Custom Tabs 0.2.10.0 | **Read-only.** Media Vote never changes its settings. See [The Vote tab](#the-vote-tab-custom-tabs-manual-setup-and-why) for the apostrophe/`$`/`\` hazard of 0.2.x. 0.3.x renders tab content at runtime, so the hazard warning is not shown for it. |
+| Plugin Pages 3.0.0.0 | `RegisterPage` / `RemovePage`, in memory, only while on. The `IsEnabled` callback never throws, and is false in preview mode. |
+| Home Screen Sections 3.0.0.0 | `RegisterSection`, only while on. The results callback never throws, and returns nothing when off, disabled, or in preview mode for non-admins. |
+| Media Bar 2.4.13.0 | The banner sits above the slideshow (`z-index` 11 > slides ≤ 10). |
+| Jellyfin Enhanced 12.x | Key events inside Media Vote's UI are stopped at `window` capture, so JE shortcuts don't fire there. Media Vote registers no global shortcuts. |
+| JavaScript Injector, Streamyfin, Playback Reporting, Reports, Intro Skipper, WhisperSubs, others | No interaction. Playback Reporting's database is only ever read (optional). |
 
 ---
 
@@ -357,192 +532,168 @@ Media Vote is **purely additive and order-independent**:
 
 ---
 
+---
+
 ## Known limitations
 
-- **No live test yet:** nothing has been run on a live Jellyfin server or real phones (see next section).
-- **Jellyfin 12:** not supported yet. The project builds a 10.11 DLL; Jellyfin 12's MUI layout needs a new banner host adapter and a `-p:JellyfinTarget=12` build. See [Jellyfin 12](#jellyfin-12).
-- **Web clients only:** the entry points appear only in jellyfin-web-based clients.
-- **Play statistics:** Jellyfin's per-user data, counting titles marked played, plus optional Playback Reporting. Series statistics are aggregated from their episodes. Partially watched, never-completed titles may count as "never played".
-- **Sizes:** the voting list uses the sizes stored in Jellyfin's database. The admin report and deletion use the real size on disk of the folders that would be deleted.
-- **Hidden titles:** titles a user cannot access (library permissions or parental controls) are hidden from that user. The visibility check is cached for 5 minutes per user.
-- **Custom Tabs:** if Custom Tabs changes how it stores tabs, automatic setup reports this and the manual HTML still works.
-- **Plugin Pages** groups our page under its *Plugin Settings* sidebar heading.
-- **Home Screen Sections:** the row has to be enabled once in HSS's own settings.
-- **Downloads in the app:** CSV download may not work inside the iOS/Android app.
-- **Android back button:** it leaves the home page instead of only closing the overlay.
+- **Untested live:** 1.0.1.0 has **not** been run on a live Jellyfin server or real devices yet; see the next section.
+- **Jellyfin version:** each build works only on the Jellyfin version it was built for (10.11.10 here); see [Jellyfin version requirement](#jellyfin-version-requirement).
+- **File Transformation:** the banner and the Vote tab need it. Media Vote never edits `index.html` itself.
+- **Custom Tabs 0.2.x** pastes tab HTML into the home page's JavaScript. Media Vote cannot make other tabs safe; it can only warn.
+- **Plugin Pages** cannot restrict a page to admins, so in preview mode the sidebar page is hidden from everyone.
+- **Home Screen Sections** has no removal API. A registered row stays (empty) until the next restart after being turned off.
+- **After the script stops itself** for a non-admin (preview mode), logging in as an admin in the same tab needs a page reload.
+- **Play statistics** come from Jellyfin's per-user data (titles marked played), plus optional Playback Reporting data.
+- **Downloads in the app:** CSV download may not work inside the iOS/Android app; use a browser.
+- **Android back button:** it leaves the home page.
 
 ---
 
 ## What has and has not been tested
 
-**Automated, in this repository:**
-- **107 unit tests** (`tests/Jellyfin.Plugin.MediaVote.Tests`):
-  - vote counting, ranking and tie handling;
-  - eligibility, vote limits, duplicates, keep votes, move atomicity;
-  - deadline logic, including voting after the deadline but before resolution, and resolving after the server was offline;
-  - turnout;
-  - London time-zone conversion including both DST edges;
-  - idempotent resolution and interrupted runs;
-  - **order of operations**: external steps before deletion, external failure skips only that title, delete failure stops the run, pre-flight failure deletes nothing, protected titles;
-  - dry run and notify-only never execute or delete;
-  - JSON store atomicity and corrupt-file handling;
-  - CSV escaping, webhook payloads, index.html injection idempotence, settings rules and key masking;
-  - **Radarr/Sonarr/Jellyseerr requests against mocked HTTP responses**: exact URLs, bodies, the API key only in a header, GET-only planning, error messages without the key.
-- **Headless-browser smoke tests** (`tests/client/*.js`, Chromium) against a **mock** jellyfin-web page with a fake ApiClient:
-  - the banner as the first element of the home tab and above a Media Bar-style slideshow;
-  - surviving Home Screen Sections-style re-renders without duplicates;
-  - moving back to the top, removal when leaving home, re-adding on return;
-  - the overlay: scroll lock, pagination, voting request with the token, focus trap, Escape;
-  - a Jellyfin Enhanced-style capture shortcut listener not firing inside our UI but still working outside it;
-  - the tab/page mount, the "No active vote" state with the last result, no banner for ineligible users;
-  - a 360 px phone: full-screen overlay, no horizontal scroll, 44 px buttons;
-  - the standalone page sign-in under a `/jf` base URL;
-  - the admin page: defaults, preview, deletion confirmation, masked keys, the banner-toggle rule, no overflow at 375 px.
-- The release packaging and manifest generation were run locally. The zip contains only `Jellyfin.Plugin.MediaVote.dll`, and its references are Jellyfin 10.11.0 and .NET 9 assemblies only.
+**Automated, in this repository (all passing):**
+- **142 unit tests**:
+  - vote rules, ties, deadlines, time zones, order of operations, dry-run safety, storage, mocked Radarr/Sonarr/Jellyseerr HTTP;
+  - **new in 1.0.1.0:** fresh-install defaults and the 1.0.0.0 config migration; preview and kill-switch rules; kill-switch file detection;
+  - the transformation callback **never returning less than its input**, for null, empty, unusual and already-injected pages;
+  - the File Transformation payload deserialised with Newtonsoft exactly as FT 3.0.0.0 does; the callback self-test; reflection calls;
+  - self-check isolation (one failing API doesn't stop the others) and readable error JSON without stack traces;
+  - Custom Tabs leftover detection and the apostrophe hazard; Custom Tabs reading being read-only;
+  - a metadata scan proving the plugin contains no call that could write another plugin's configuration;
+  - `build.yaml` `targetAbi` matching the compiled Jellyfin version.
+- **Binary compatibility** (`tools/ApiCompat`):
+  - the 1.0.1.0 DLL binds against the **real server DLLs taken from `linuxserver/jellyfin:10.11.10`**, as well as the 10.11.10 and 10.11.11 NuGet packages;
+  - the released 1.0.0.0 DLL fails with the exact `get_Users()` error from the server log.
+- **Custom Tabs regression** (`tests/client/customtabs-chunk.js`): Custom Tabs 0.2.10.0's transformation runs on the real 10.11.10 `home-html` chunk.
+  - The 1.0.0.0 tab → `SyntaxError`, matching the blank screen.
+  - The 1.0.1.0 snippet → valid page with the mount element.
+- **Headless Chromium smoke tests** (mock jellyfin-web): everything from 1.0.0.0, plus:
+  - preview mode for a non-admin renders nothing and stops all work;
+  - "disabled" renders nothing, not even the stylesheet;
+  - `client.js` 404 is harmless, and repeated 500s stop the script after 3 requests;
+  - a mount element that appears late is filled;
+  - admin page: Users failing with 500 shows a readable error only in the picker, while settings and libraries still load; Retry; all users listed with disabled ones marked; select all/none, count and search;
+  - admin page: Go live with in-page confirmation; the snippet card and copy button; every entry point can be off.
 
-**Not tested, because it needs a live server, real plugins or real devices:**
-- Loading the plugin in a real Jellyfin 10.11.1 (linuxserver image) and running its start-up task.
-- Real **File Transformation 3.0** callback invocation, real **Plugin Pages / Home Screen Sections / Custom Tabs** registration, and the real jellyfin-web 10.11 DOM together with real Media Bar, HSS, Jellyfin Enhanced and Custom Tabs scripts.
-- The official **iOS and Android apps** (WKWebView / Android WebView behaviour, keyboard, safe areas, app restart behaviour) and the **Jellyfin Desktop** app.
-- **Real deletion** on your drives and the permission check against your actual mounts. Run a **Dry run** first.
-- **Real Radarr, Sonarr and Jellyseerr instances**, and Discord webhooks.
-- Reading a real **Playback Reporting** database.
+**Not tested, because it needs your live server or devices:**
+- Installing 1.0.1.0 on Jellyfin 10.11.10 and the start-up task running there (self-check results, File Transformation / Plugin Pages / HSS registration, Custom Tabs read).
+- `OnUninstalling` being called by Jellyfin, and the removal calls working.
+- The real jellyfin-web DOM with Media Bar, Home Screen Sections, Jellyfin Enhanced and Custom Tabs scripts, and the snippet rendering inside the real Custom Tabs tab.
+- Official iOS/Android apps and Jellyfin Desktop.
+- Real deletion and permission checks on your drives; real Radarr/Sonarr/Jellyseerr; Discord webhooks.
 
 ---
 
 ## Manual test checklist
 
-Do this on a test vote first, using **Notify only**, with a couple of throw-away titles in a protected-free test library. Tick each item on **(a) iPhone app, (b) iPad app in portrait and landscape, (c) Android app, (d) desktop browser, (e) Jellyfin Desktop app**, with **Media Bar, Home Screen Sections, Jellyfin Enhanced and Custom Tabs all enabled**.
+Do these **in order**. The first steps are the safest. Stop at the first problem: create the `DISABLE` file and report it.
 
-**Install and injection**
-- [ ] After install and restart, *Media Vote → Status & setup* shows **FileTransformation: Injected…** and lists Plugin Pages, Home Screen Sections and Custom Tabs as detected and registered.
-- [ ] Browsers were hard-refreshed and apps fully closed and reopened; if needed, users signed out and in.
-- [ ] Other plugins still work: the Media Bar slideshow, HSS sections, Jellyfin Enhanced features and shortcuts, existing Custom Tabs, Plugin Pages entries, JavaScript Injector scripts.
+1. **If you had 1.0.0.0:** delete its Vote tab in *Custom Tabs* and Save. Check that the home page is normal for you and for a non-admin.
+2. **Install** 1.0.1.0 from the repository and restart Jellyfin. Check that the home page, Media Bar, HSS, Jellyfin Enhanced and Custom Tabs still look and work exactly as before, for both an admin and a non-admin. Media Vote should be invisible.
+3. **Status & setup:** every self-check line is OK (Users shows your real user count). *Entry points* are all off except standalone. *Preview mode is ON*. The Custom Tabs check shows no warnings (after step 1).
+4. **Kill switch:** run `touch /DATA/AppData/jellyfin/config/data/mediavote/DISABLE` and restart. Check:
+   - the Status tab shows "Disabled by file";
+   - `https://<server>/MediaVote/client.js` returns only a comment;
+   - `/MediaVote/vote` shows nothing for a non-admin.
 
-**Banner**
-- [ ] With a vote open and the user eligible, the banner is the **topmost element** of the home page, **above the Media Bar slideshow** and **above HSS's rows**.
-- [ ] It stays there after: switching to Favorites and back; opening a title and pressing back; HSS refreshing; Media Bar changing slides; rotating an iPad.
-- [ ] It never appears twice.
-- [ ] It is gone on other pages, for ineligible users, when no vote is open, and when the banner toggle is off (with another entry point on).
-- [ ] It shows "Not voted yet" before you vote and the votes-left count after; "Closing soon" appears inside the reminder window.
-- [ ] Banner colours match the current theme, both dark and light; try another theme or custom CSS.
-
-**Voting screen** (open from the banner, the Vote tab and the Vote sidebar page)
-- [ ] It is the same UI from all three. On phones the overlay is full screen and respects the notch and home indicator; on desktop it is a centred dialog.
-- [ ] The page behind does not scroll while the overlay is open.
-- [ ] The search box stays visible with the on-screen keyboard open (iPhone and Android).
-- [ ] Typing in search or using the selects does **not** trigger Jellyfin Enhanced shortcuts. Shortcuts still work after closing.
-- [ ] Posters load lazily, scrolling loads more titles, and search, type, genre, sort and *My votes* work.
-- [ ] Vote, undo, run out of votes, then move a vote. Counts update in the header, the footer and the banner.
-- [ ] Voter names and tallies show or hide according to the vote's settings, for a non-admin user.
-- [ ] Tapping a title opens its Jellyfin page in-app with no full reload, and back returns to Jellyfin.
-- [ ] Desktop: Tab stays inside the overlay, Escape closes it and focus returns to the banner. A screen reader announces the dialog and the vote changes.
-
-**"No active vote" state**
-- [ ] With no open vote: the Vote tab and the Vote page show "No active vote right now" plus the last result, on phone, iPad and desktop.
-- [ ] As an ineligible user during a vote: "You are not taking part in the current vote."
-
-**Standalone page**
-- [ ] `https://<server>/MediaVote/vote` signs in with a Jellyfin account and allows voting. It also works with File Transformation disabled.
-
-**Server rules** (try from a browser console or a second account)
-- [ ] Voting after the deadline, over the limit, twice on one title (when not allowed) and as an ineligible user are all refused.
-
-**Resolution**
-- [ ] Close a Notify-only vote early. The report lists names, paths, sizes and the matched Radarr/Sonarr/Jellyseerr entries; nothing is deleted or changed in those apps.
-- [ ] Create a tie across the cut-off: nothing in the tie is acted on, *needs attention* appears, and the tie-break works.
-- [ ] Set a minimum turnout that is not met: nothing happens, and *Resolve anyway* works.
-- [ ] Stop Jellyfin before a deadline, start it after: the vote resolves within about a minute of start-up.
-- [ ] **Dry run** on a Delete vote shows the exact paths, sizes, permission problems and external actions, and Radarr/Sonarr/Jellyseerr are unchanged afterwards.
-- [ ] With one throw-away movie and one throw-away series:
-  - Delete automatically removes them from Jellyfin and disk, including every season folder.
-  - Radarr/Sonarr show them unmonitored or excluded.
-  - The Jellyseerr record is removed if configured.
-  - The audit log lists every step.
-- [ ] Make one folder read-only: the vote deletes **nothing** and reports the path and reason.
-- [ ] Stop Radarr: that movie is skipped with an error, the next title is still processed, and *Retry* works after Radarr is back.
-- [ ] Webhook messages arrive (if configured), and the CSV opens correctly.
+   Then `rm /DATA/AppData/jellyfin/config/data/mediavote/DISABLE`, restart, and check the Status tab no longer says "Disabled by file".
+5. **Admin page:** *New vote → Selected users* lists **all** users, disabled ones marked; search, select all/none and the count work. Save settings works. Errors, if any, show readable text.
+6. **Test vote (Notify only)** for yourself only. Vote on the standalone page as admin. Close it early and check the report. Nothing is deleted and nothing changes in Radarr/Sonarr/Jellyseerr.
+7. **Banner on** (preview mode): hard-refresh. As admin, the banner is the top element of the home page, above Media Bar and HSS, and the overlay opens and votes. As a non-admin (private window, phone app): nothing at all. Other plugins unaffected.
+8. **Sidebar page on** (preview mode): it does not appear in anyone's menu. As admin, open `#/userpluginsettings.html?pageUrl=/MediaVote/page`; it shows the voting screen or "No active vote right now".
+9. **HSS row on** (and enabled in HSS): admins see the leaders row; non-admins don't.
+10. **Go live**, after the in-page confirmation. Non-admins now see the enabled entry points (ask them to close and reopen the app). Check on iPhone, iPad (both orientations), Android, a desktop browser and Jellyfin Desktop:
+    - the banner position, voting, the overlay and the keyboard;
+    - the "No active vote" state on the page;
+    - Jellyfin Enhanced shortcuts not firing while typing in Media Vote.
+11. **Vote tab (optional):** add the exact snippet in Custom Tabs, tick the setting, reload. The home page still loads, and the tab shows the voting screen on phone, iPad and desktop, or "No active vote right now". With the banner and tab toggles both off, the tab shows only the plain fallback text, and the home page still works.
+12. **Back to preview** hides everything from non-admins again.
+13. Before a **Delete automatically** vote: Dry run, then one throw-away movie and one throw-away series, following the 1.0.0.0 checklist items for deletion, Radarr/Sonarr/Jellyseerr, permissions and Retry.
+14. **Uninstall test (optional):** uninstall from the dashboard and restart. The banner, sidebar page and script disappear, and the home page and other plugins are fine.
 
 ---
 
 ## REST API
 
-All routes are relative to the server base URL. Responses are camelCase JSON.
+All routes are relative to the server base URL, and responses are camelCase JSON. Errors are `{ "error": code, "message": readable text }`, with codes such as `jellyfin_api_error`, `jellyfin_version_mismatch`, `server_error`, `preview` and `disabled`.
 
-**User** (`[Authorize]`; acts only as the token's user):
+**User** (`[Authorize]`; acts only as the token's user; refused with `403 preview` for non-admins in preview mode and `403 disabled` with the kill switch):
 
 | Method & route | Purpose |
 |---|---|
-| `GET /MediaVote/Status` | Active vote summary for this user, last result, enabled entry points. |
-| `GET /MediaVote/Items?search=&type=&genre=&sort=&desc=&mine=&page=&pageSize=` | Paged votable titles (max 100 per page). |
-| `POST /MediaVote/Vote` `{itemId, kind}` | Cast a vote (`Remove` or `Keep`). |
-| `POST /MediaVote/Unvote` `{itemId, kind}` | Withdraw one of your votes. |
-| `POST /MediaVote/Move` `{fromItemId, itemId, kind}` | Move a vote atomically. |
-| `POST /MediaVote/Results/{id}/Dismiss` | Hide the result banner for you. |
+| `GET /MediaVote/Status` | Active vote summary for this user, last result, entry points, plus `preview`, `hidden` and `disabled` flags. |
+| `GET /MediaVote/Items?…` | Paged votable titles. |
+| `POST /MediaVote/Vote` · `Unvote` · `Move` | Cast, withdraw or move a vote. |
+| `POST /MediaVote/Results/{id}/Dismiss` | Hide the result banner. |
 
-**Anonymous (static, no data):** `GET /MediaVote/client.js`, `/MediaVote/client.css`, `/MediaVote/page` (Plugin Pages fragment), `/MediaVote/vote` (standalone page).
+**Anonymous:** `client.js` (inert while `DISABLE` exists), `client.css`, `page`, `vote`.
 
-**Admin** (`[Authorize(Policy = "RequiresElevation")]`), all under `/MediaVote/Admin/`:
+**Admin** (`RequiresElevation`), all under `/MediaVote/Admin/`:
 
 | Method | Routes |
 |---|---|
-| GET | `Overview`, `Users`, `Libraries`, `Search?term=`, `Sessions/{id}`, `Sessions/{id}/Csv`, `Audit?sessionId=&max=`, `Settings` |
-| POST | `Preview`, `Sessions`, `Sessions/{id}/Extend`, `/Close`, `/Cancel`, `/DryRun`, `/BreakTie`, `/Retry`, `/ResolveAnyway`, `Settings`, `Test/{radarr\|sonarr\|jellyseerr}`, `Reinject` |
+| GET | `Overview` (includes self-check, kill switch, preview, entry points, Custom Tabs findings and snippet), `Users`, `Libraries`, `Search`, `Sessions/{id}`, `Sessions/{id}/Csv`, `Audit`, `Settings` |
+| POST | `Preview`, `Sessions`, `Sessions/{id}/Extend`, `/Close`, `/Cancel`, `/DryRun`, `/BreakTie`, `/Retry`, `/ResolveAnyway`, `Settings`, `Test/{service}`, `SelfCheck`, `Visibility` (`{ "previewOnly": false }` = Go live), `Reapply` |
 
 ---
 
-## Development, releases and Jellyfin 12
+## Development, CI and releases
 
 ```
 src/Jellyfin.Plugin.MediaVote/
-  Core/           Pure logic, no Jellyfin types: rules, tally/ties, executor (order of operations), service, CSV, time zones
-  Storage/        JSON vote store (atomic, copy-on-write) and JSON-lines audit log
-  Integrations/   Radarr/Sonarr/Jellyseerr clients, webhook notifier
-  Services/       Jellyfin adapters (library, users, deletion, permission probe, Playback Reporting), deadline timer, scheduled tasks
-  Web/            File Transformation injection, entry-point registration (Plugin Pages, HSS, Custom Tabs)
-  Api/            REST controllers
-  Assets/         client.js, client.css, page.html, standalone.html (embedded)
-  Configuration/  plugin configuration and the admin page
+  Core/           pure logic: rules, tallies, executor, access rules, self-check runner, Custom Tabs inspector, error text
+  Storage/        JSON vote store and audit log
+  Integrations/   Radarr/Sonarr/Jellyseerr clients, webhook
+  Services/       Jellyfin adapters, kill switch, API self-check, deadline timer, scheduled tasks
+  Web/            File Transformation callback, entry points (Plugin Pages, HSS), Custom Tabs read-only check
+  Api/            REST controllers and error filter
+  Assets/         client.js, client.css, page.html, standalone.html
+  Configuration/  settings and the admin page
 tests/Jellyfin.Plugin.MediaVote.Tests/   xUnit tests
-tests/client/                            headless Chromium smoke tests (mock jellyfin-web)
+tests/client/                            Chromium smoke tests and the Custom Tabs chunk regression test
+tools/ApiCompat/                         binary compatibility checker (JIT-compiles the DLL against a Jellyfin version)
 ```
 
 ```sh
-dotnet build -c Release
-dotnet test -c Release
-NODE_PATH=$(npm root -g) node tests/client/smoke.js        # needs the playwright package + Chromium
+python3 .github/scripts/check_versions.py
+dotnet build -c Release && dotnet test -c Release
+dotnet build tools/ApiCompat -c Release -p:JellyfinVersion=10.11.10
+dotnet tools/ApiCompat/bin/Release/net9.0/ApiCompat.dll src/Jellyfin.Plugin.MediaVote/bin/Release/net9.0/Jellyfin.Plugin.MediaVote.dll
+dotnet tools/ApiCompat/bin/Release/net9.0/ApiCompat.dll --list src/Jellyfin.Plugin.MediaVote/bin/Release/net9.0/Jellyfin.Plugin.MediaVote.dll  # every Jellyfin member used
+node tests/client/customtabs-chunk.js
+NODE_PATH=$(npm root -g) node tests/client/smoke.js
 NODE_PATH=$(npm root -g) node tests/client/admin-smoke.js
 ```
 
-CI (`.github/workflows/build.yml`) builds, runs the unit tests and the smoke tests, and uploads a development zip.
+CI (`.github/workflows/build.yml`) runs:
+- the version check;
+- the build and unit tests;
+- the **blocking** binary check against the `targetAbi` version;
+- the JS parse checks, the Custom Tabs regression test and the smoke tests;
+- a **non-blocking** job against the latest published 10.11.x.
+
+The release workflow also runs the version check and the binary check before publishing.
 
 ### Publishing a release
 
-1. Merge into `main`. The manifest is committed to the default branch.
+1. Merge this PR into `main`. That also removes 1.0.0.0 from `manifest.json`.
 2. Tag and push:
    ```sh
-   git tag -a v1.0.0.0 -m "First release"
-   git push origin v1.0.0.0
+   git fetch origin && git checkout main && git pull
+   git tag -a v1.0.1.0 -m "Media Vote 1.0.1.0: safety fix-up for Jellyfin 10.11.10 (see build.yaml changelog)"
+   git push origin v1.0.1.0
    ```
-   You can also create the tag through **GitHub → Releases → Draft a new release**. The workflow attaches the zip to an existing release.
 3. `.github/workflows/release.yml` then:
-   - tests;
-   - builds with the tag's version as the assembly version;
-   - zips `Jellyfin.Plugin.MediaVote.dll` as `media-vote_<version>.zip`;
+   - checks versions, tests and runs the binary check;
+   - builds `media-vote_1.0.1.0.zip`;
    - creates the GitHub Release;
-   - runs `.github/scripts/update_manifest.py`, which adds the version (changelog from the tag message, `targetAbi` 10.11.0.0, `sourceUrl` of the release zip, MD5 `checksum` as Jellyfin verifies it, and a timestamp) to `manifest.json` on `main`, and pushes it.
-4. If `main` is branch-protected, allow GitHub Actions to push, or apply the manifest change by hand.
-
-`build.yaml` holds the same metadata in JPRM format, if you prefer [JPRM](https://github.com/oddstr13/jellyfin-plugin-repository-manager).
+   - adds 1.0.1.0 (`targetAbi 10.11.10.0`, MD5 checksum) to `manifest.json` on `main`.
+4. Check the Actions tab. When it is green, the repository URL serves 1.0.1.0.
+5. Optional: mark the old GitHub Release `v1.0.0.0` as a pre-release or delete its zip, so nobody downloads it by hand. Its tag and history stay.
 
 ### Jellyfin 12
 
-The project is ready for a second build line:
-- `Jellyfin.Plugin.MediaVote.csproj` has a `JellyfinTarget` switch. `-p:JellyfinTarget=12` targets net10.0 and Jellyfin 12 packages, and defines `JELLYFIN_12` for any version-specific code.
-- The client's DOM knowledge is isolated in `hostAdapters` in `client.js`.
-- Custom Tabs already supports 12's MUI header.
-
-To support 12, add a host adapter for the MUI home layout and test it there, add a manifest version with `targetAbi` 12.x, and fix any API differences behind `#if JELLYFIN_12`.
+The csproj has a `JellyfinTarget` switch (`-p:JellyfinTarget=12`), and the client's DOM knowledge is isolated in `hostAdapters`. A Jellyfin 12 build needs a new host adapter, its own `targetAbi`, and the same version and binary checks.
 
 ---
 
@@ -570,6 +721,12 @@ To support 12, add a host adapter for the MUI home layout and test it there, add
 - **Sonarr API v3** → [OpenAPI spec](https://github.com/Sonarr/Sonarr/blob/develop/src/Sonarr.Api.V3/openapi.json)
 - **Jellyseerr / Seerr API v1** → [seerr-api.yml](https://github.com/seerr-team/seerr/blob/develop/seerr-api.yml)
 - **Jellyfin plugin repository manifest format and JPRM** → [oddstr13/jellyfin-plugin-repository-manager](https://github.com/oddstr13/jellyfin-plugin-repository-manager)
+- **1.0.1.0 additions:**
+  - **Jellyfin 10.11.10:** `Jellyfin.Controller`/`Jellyfin.Model` 10.11.10 on NuGet, and the server DLLs from `linuxserver/jellyfin:10.11.10`. Their public API was diffed against 10.11.0 (`IUserManager.Users` → `GetUsers()`), and `BasePlugin.OnUninstalling()` was confirmed to exist.
+  - **Custom Tabs 0.2.10.0** (tag `0.2.10.0`): `Helpers/TransformationPatches.cs` (`HomeHtmlChunk`), `Inject/addCustomTabs.js`, `Configuration/PluginConfiguration.cs` → [IAmParadox27/jellyfin-plugin-custom-tabs](https://github.com/IAmParadox27/jellyfin-plugin-custom-tabs/tree/0.2.10.0)
+  - **jellyfin-web 10.11.10** build: `home-html.8ce38bc7d6dc073656d4.chunk.js` from the linuxserver image (fixture in `tests/client/fixtures/`).
+  - **File Transformation 3.0.0.0** (tag `3.0.0.0`): `Helpers/TransformationHelper.cs` (callback payload, null/empty handling), `PluginInterface.cs` (`RemoveTransformation`), `Infrastructure/FileTransformationMiddleware.cs` → [IAmParadox27/jellyfin-plugin-file-transformation](https://github.com/IAmParadox27/jellyfin-plugin-file-transformation/tree/3.0.0.0)
+  - **Plugin Pages 3.0.0.0** (`RemovePage`) and **Home Screen Sections 3.0.0.0** (no removal API), checked at their tags.
 
 ## License
 

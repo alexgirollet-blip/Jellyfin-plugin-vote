@@ -39,17 +39,34 @@ public enum WebhookKind
 /// </summary>
 public class PluginConfiguration : BasePluginConfiguration
 {
-    // ---------------- entry points (all on by default) ----------------
+    /// <summary>Current configuration schema version. See <see cref="Migrate"/>.</summary>
+    public const int CurrentConfigVersion = 2;
 
-    public bool EnableBanner { get; set; } = true;
+    /// <summary>Schema version of this saved configuration (0 = written by 1.0.0.0 or new).</summary>
+    public int ConfigVersion { get; set; }
 
-    public bool EnableCustomTab { get; set; } = true;
+    // ---------------- entry points (staged rollout: all optional ones OFF by default) ----------------
 
-    public bool EnablePluginPage { get; set; } = true;
+    public bool EnableBanner { get; set; }
 
-    public bool EnableHomeSection { get; set; } = true;
+    /// <summary>
+    /// Whether the admin has added the Vote tab to Custom Tabs by hand (Media Vote never writes to Custom Tabs).
+    /// Only controls whether the injected script is needed for the tab's mount element.
+    /// </summary>
+    public bool EnableCustomTab { get; set; }
 
+    public bool EnablePluginPage { get; set; }
+
+    public bool EnableHomeSection { get; set; }
+
+    /// <summary>The standalone page (/MediaVote/vote) needs no other plugin and injects nothing, so it is on by default.</summary>
     public bool EnableStandalonePage { get; set; } = true;
+
+    /// <summary>
+    /// Preview mode (ON by default): every entry point renders nothing for non-administrators, and the
+    /// server refuses non-admin voting calls, so friends see nothing while the admin tests. "Go live" turns it off.
+    /// </summary>
+    public bool AdminPreviewOnly { get; set; } = true;
 
     public string TabTitle { get; set; } = "Vote";
 
@@ -113,20 +130,32 @@ public class PluginConfiguration : BasePluginConfiguration
     public string PublicServerUrl { get; set; } = string.Empty;
 
     /// <summary>
-    /// Enforces cross-field rules: the banner can only be disabled if another entry point that opens the
-    /// voting UI (Vote tab, sidebar page or standalone page) is enabled. The Home Screen Sections row only
-    /// shows the current leaders, so it does not count.
+    /// Upgrades a configuration saved by an older version. 1.0.0.0 defaulted every entry point (including the
+    /// automatic Custom Tabs write) to ON; on upgrade all optional entry points are switched OFF and preview mode
+    /// is switched ON, so an upgrade can never re-enable anything risky by itself.
     /// </summary>
+    /// <returns>True if the configuration was changed.</returns>
+    public bool Migrate()
+    {
+        if (ConfigVersion >= CurrentConfigVersion)
+        {
+            return false;
+        }
+
+        EnableBanner = false;
+        EnableCustomTab = false;
+        EnablePluginPage = false;
+        EnableHomeSection = false;
+        AdminPreviewOnly = true;
+        ConfigVersion = CurrentConfigVersion;
+        return true;
+    }
+
+    /// <summary>Normalises values. Every entry point may be off: the admin page and the standalone page always work.</summary>
     /// <returns>True if something was corrected.</returns>
     public bool Normalize()
     {
         bool changed = false;
-        if (!EnableBanner && !EnableCustomTab && !EnablePluginPage && !EnableStandalonePage)
-        {
-            EnableBanner = true;
-            changed = true;
-        }
-
         if (string.IsNullOrWhiteSpace(TabTitle))
         {
             TabTitle = "Vote";

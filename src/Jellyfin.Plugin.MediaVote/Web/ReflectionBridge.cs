@@ -21,9 +21,47 @@ public static class ReflectionBridge
             .SelectMany(c => c.Assemblies)
             .FirstOrDefault(a => string.Equals(a.GetName().Name, simpleName, StringComparison.Ordinal));
 
-    /// <summary>Invokes <c>{typeName}.{methodName}(JObject)</c> with <paramref name="payload"/> serialised to JSON.</summary>
+    /// <summary>Invokes a static one-argument method (e.g. RemoveTransformation(Guid), RemovePage(string)). Never throws.</summary>
+    /// <returns>Null on success, otherwise a description of what went wrong.</returns>
+    public static string? InvokeStatic(Assembly assembly, string typeName, string methodName, object argument)
+    {
+        try
+        {
+            var method = assembly.GetType(typeName)?.GetMethods(BindingFlags.Public | BindingFlags.Static)
+                .FirstOrDefault(m => m.Name == methodName && m.GetParameters().Length == 1 && m.GetParameters()[0].ParameterType.IsInstanceOfType(argument));
+            if (method is null)
+            {
+                return $"{typeName}.{methodName} not found.";
+            }
+
+            method.Invoke(null, new[] { argument });
+            return null;
+        }
+#pragma warning disable CA1031
+        catch (Exception ex)
+#pragma warning restore CA1031
+        {
+            return (ex as TargetInvocationException)?.InnerException?.Message ?? ex.Message;
+        }
+    }
+
+    /// <summary>Invokes <c>{typeName}.{methodName}(JObject)</c> with <paramref name="payload"/> serialised to JSON. Never throws.</summary>
     /// <returns>Null on success, otherwise a description of what went wrong.</returns>
     public static string? InvokeWithJObject(Assembly assembly, string typeName, string methodName, object payload)
+    {
+        try
+        {
+            return InvokeWithJObjectCore(assembly, typeName, methodName, payload);
+        }
+#pragma warning disable CA1031 // another plugin's failure must never break Media Vote or the server
+        catch (Exception ex)
+#pragma warning restore CA1031
+        {
+            return $"{typeName}.{methodName} failed: {ex.Message}";
+        }
+    }
+
+    private static string? InvokeWithJObjectCore(Assembly assembly, string typeName, string methodName, object payload)
     {
         var type = assembly.GetType(typeName);
         if (type is null)

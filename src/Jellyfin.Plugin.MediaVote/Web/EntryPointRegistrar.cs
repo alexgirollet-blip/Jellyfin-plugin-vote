@@ -4,6 +4,8 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using Jellyfin.Plugin.MediaVote.Configuration;
+using Jellyfin.Plugin.MediaVote.Core;
+using Jellyfin.Plugin.MediaVote.Services;
 using MediaBrowser.Common.Plugins;
 using Microsoft.Extensions.Logging;
 
@@ -13,25 +15,26 @@ namespace Jellyfin.Plugin.MediaVote.Web;
 public sealed record IntegrationStatus(string Name, bool Detected, string? Version, bool Enabled, bool Registered, string Message);
 
 /// <summary>
-/// Registers the optional entry points with other plugins, detected at runtime:
+/// Optional entry points, detected at runtime. Media Vote NEVER writes to another plugin's saved settings.
 /// <list type="bullet">
-/// <item>Plugin Pages: <c>PluginInterface.RegisterPage(JObject)</c> (in-memory; done at every start).</item>
-/// <item>Home Screen Sections: <c>PluginInterface.RegisterSection(JObject)</c> with a results callback.</item>
-/// <item>Custom Tabs: it has no registration API, but it stores its tabs in its plugin configuration and runs
-///   scripts inside tab HTML. We append ONE tab marked with <c>data-mediavote-mount</c> (never touching other tabs)
-///   and remove only that tab when the toggle is turned off.</item>
+/// <item>Plugin Pages: <c>PluginInterface.RegisterPage(JObject)</c> / <c>RemovePage(string)</c>, in memory only,
+///   and only while the "sidebar page" entry point is on.</item>
+/// <item>Home Screen Sections: <c>PluginInterface.RegisterSection(JObject)</c>, in memory only, only while the
+///   section entry point is on (HSS has no removal API; the results callback returns nothing when disabled).</item>
+/// <item>Custom Tabs: read-only. The admin adds the Vote tab by hand with <see cref="CustomTabsInspector.Snippet"/>;
+///   saved tabs are inspected to warn about the 1.0.0.0 leftover and other tabs that would break the home page.</item>
 /// </list>
 /// </summary>
 public sealed class EntryPointRegistrar
 {
     public const string PluginPagesId = "Jellyfin.Plugin.MediaVote";
     public const string SectionId = "MediaVote";
-    public const string TabMarker = "data-mediavote-mount";
     public static readonly Guid CustomTabsPluginId = Guid.Parse("fbacd0b6-fd46-4a05-b0a4-2045d6a135b0");
 
     private readonly IPluginManager _pluginManager;
     private readonly ILogger<EntryPointRegistrar> _logger;
     private readonly Dictionary<string, IntegrationStatus> _status = new();
+    private readonly object _lock = new();
     private bool _pagesRegistered;
     private bool _sectionRegistered;
 
@@ -45,213 +48,208 @@ public sealed class EntryPointRegistrar
     {
         get
         {
-            lock (_status)
+            lock (_lock)
             {
                 return _status.Values.ToList();
             }
         }
     }
 
+    /// <summary>Latest read-only findings about Custom Tabs' saved tabs.</summary>
+    public IReadOnlyList<CustomTabFinding> CustomTabFindings { get; private set; } = Array.Empty<CustomTabFinding>();
+
     private static PluginConfiguration Config => Plugin.Instance?.Configuration ?? new PluginConfiguration();
 
-    /// <summary>The Custom Tabs tab content: a mount point plus a loader in case the injected script is missing.</summary>
-    public static string TabHtml()
-        => "<div " + TabMarker + "=\"tab\" class=\"mediavote-tab-host\"></div>"
-           + "<script>(function(){if(window.MediaVote&&window.MediaVote.scan){window.MediaVote.scan();return;}"
-           + "if(document.getElementById('mediavote-loader'))return;var s=document.createElement('script');s.id='mediavote-loader';"
-           + "s.src=(window.ApiClient?window.ApiClient.getUrl('MediaVote/client.js'):'../MediaVote/client.js');document.head.appendChild(s);})();</script>";
-
-    public void RegisterAll()
+    /// <summary>Applies the current settings. Never throws.</summary>
+    public void Apply()
     {
-        Safe("Plugin Pages", RegisterPluginPage);
-        Safe("Home Screen Sections", RegisterHomeSection);
-        Safe("Custom Tabs", SyncCustomTab);
+        Safe("Custom Tabs", InspectCustomTabs);
+        if (KillSwitch.IsActive)
+        {
+            Safe("Plugin Pages", RemovePluginPage);
+            Set("Plugin Pages", ReflectionBridge.FindAssembly("Jellyfin.Plugin.PluginPages") is not null, null, Config.EnablePluginPage, false, "Disabled by file: nothing registered.");
+            Set("Home Screen Sections", ReflectionBridge.FindAssembly("Jellyfin.Plugin.HomeScreenSections") is not null, null, Config.EnableHomeSection, _sectionRegistered, "Disabled by file: the section shows nothing.");
+            return;
+        }
+
+        Safe("Plugin Pages", SyncPluginPage);
+        Safe("Home Screen Sections", SyncHomeSection);
     }
 
-    /// <summary>Re-applies toggles after the admin saves settings.</summary>
-    public void OnConfigurationChanged()
+    /// <summary>Removes everything Media Vote registered with other plugins (uninstall). Never throws.</summary>
+    public void UnregisterAll()
     {
-        Safe("Custom Tabs", SyncCustomTab);
+        Safe("Plugin Pages", RemovePluginPage);
+    }
+
+    /// <summary>Re-reads Custom Tabs' saved tabs (read-only).</summary>
+    public void InspectCustomTabs()
+    {
+        var local = _pluginManager.Plugins.FirstOrDefault(p => p.Id == CustomTabsPluginId);
+        if (local?.Instance is not IHasPluginConfiguration plugin)
+        {
+            CustomTabFindings = Array.Empty<CustomTabFinding>();
+            Set("Custom Tabs", false, null, Config.EnableCustomTab, false, "Not installed. The Vote tab needs the Custom Tabs plugin; the standalone page works without it.");
+            return;
+        }
+
+        var version = local.Version;
+        var tabs = ReadTabs(plugin.Configuration);
+        CustomTabFindings = tabs is null
+            ? Array.Empty<CustomTabFinding>()
+            : CustomTabsInspector.Inspect(tabs, version);
+        bool hasOurTab = CustomTabFindings.Any(f => f.Kind == "MediaVoteTab");
+        string message = tabs is null
+            ? "Installed, but its saved tabs could not be read (different version). Media Vote does not change Custom Tabs; add the tab by hand."
+            : CustomTabsInspector.NeedsAction(CustomTabFindings)
+                ? "ACTION NEEDED: see the Custom Tabs warnings below."
+                : hasOurTab ? "A Vote tab with the safe snippet is present." : "No Vote tab yet. Add one by hand with the snippet below if you want it.";
+        Set("Custom Tabs", true, version?.ToString(), Config.EnableCustomTab, hasOurTab, message);
+        foreach (var f in CustomTabFindings.Where(f => f.Kind != "MediaVoteTab"))
+        {
+            _logger.LogWarning("Media Vote: Custom Tabs check: {Message}", f.Message);
+        }
+    }
+
+    /// <summary>Reads Custom Tabs' configuration <c>Tabs[]</c> (Title, ContentHtml) by reflection. Read-only.</summary>
+    internal static List<CustomTabInfo>? ReadTabs(object? configuration)
+    {
+        if (configuration is null)
+        {
+            return null;
+        }
+
+        var tabsProp = configuration.GetType().GetProperty("Tabs", BindingFlags.Public | BindingFlags.Instance);
+        if (tabsProp?.GetValue(configuration) is not IEnumerable tabs)
+        {
+            return null;
+        }
+
+        var list = new List<CustomTabInfo>();
+        int i = 0;
+        foreach (var t in tabs)
+        {
+            if (t is null)
+            {
+                i++;
+                continue;
+            }
+
+            var type = t.GetType();
+            var title = type.GetProperty("Title")?.GetValue(t) as string ?? string.Empty;
+            var html = type.GetProperty("ContentHtml")?.GetValue(t) as string ?? string.Empty;
+            list.Add(new CustomTabInfo(i++, title, html));
+        }
+
+        return list;
+    }
+
+    private void SyncPluginPage()
+    {
+        var asm = ReflectionBridge.FindAssembly("Jellyfin.Plugin.PluginPages");
+        var cfg = Config;
+        if (asm is null)
+        {
+            Set("Plugin Pages", false, null, cfg.EnablePluginPage, false, "Not installed (optional). The standalone page /MediaVote/vote works without it.");
+            return;
+        }
+
+        var version = asm.GetName().Version?.ToString();
+        if (!cfg.EnablePluginPage)
+        {
+            RemovePluginPage();
+            Set("Plugin Pages", true, version, false, false, "Off. Turn on \"Vote page in the sidebar\" to register it.");
+            return;
+        }
+
         if (!_pagesRegistered)
         {
-            Safe("Plugin Pages", RegisterPluginPage);
+            var error = ReflectionBridge.InvokeWithJObject(asm, "Jellyfin.Plugin.PluginPages.PluginInterface", "RegisterPage", new Dictionary<string, object?>
+            {
+                ["Id"] = PluginPagesId,
+                ["Url"] = "/MediaVote/page",
+                ["DisplayText"] = "Vote",
+                ["Icon"] = "how_to_vote",
+                ["IsEnabledAssembly"] = typeof(EntryPointRegistrar).Assembly.FullName,
+                ["IsEnabledClass"] = nameof(PluginPagesCallbacks),
+                ["IsEnabledMethod"] = nameof(PluginPagesCallbacks.IsMediaVotePageEnabled)
+            });
+            _pagesRegistered = error is null;
+            if (error is not null)
+            {
+                Set("Plugin Pages", true, version, true, false, "Registration failed: " + error);
+                return;
+            }
+        }
+
+        Set("Plugin Pages", true, version, true, true, cfg.AdminPreviewOnly
+            ? "Registered, but hidden from everyone while preview mode is on (Plugin Pages cannot show a page to admins only). Test it at #/userpluginsettings.html?pageUrl=/MediaVote/page."
+            : "\"Vote\" page shown in the sidebar under Plugin Settings.");
+    }
+
+    private void RemovePluginPage()
+    {
+        if (!_pagesRegistered)
+        {
+            return;
+        }
+
+        var asm = ReflectionBridge.FindAssembly("Jellyfin.Plugin.PluginPages");
+        var error = asm is null ? null : ReflectionBridge.InvokeStatic(asm, "Jellyfin.Plugin.PluginPages.PluginInterface", "RemovePage", PluginPagesId);
+        if (error is null)
+        {
+            _pagesRegistered = false;
+        }
+        else
+        {
+            _logger.LogWarning("Media Vote: could not remove the Plugin Pages entry: {Error}", error);
+        }
+    }
+
+    private void SyncHomeSection()
+    {
+        var asm = ReflectionBridge.FindAssembly("Jellyfin.Plugin.HomeScreenSections");
+        var cfg = Config;
+        if (asm is null)
+        {
+            Set("Home Screen Sections", false, null, cfg.EnableHomeSection, false, "Not installed (optional).");
+            return;
+        }
+
+        var version = asm.GetName().Version?.ToString();
+        if (!cfg.EnableHomeSection)
+        {
+            Set("Home Screen Sections", true, version, false, _sectionRegistered, _sectionRegistered ? "Off: the registered section now returns nothing." : "Off.");
+            return;
         }
 
         if (!_sectionRegistered)
         {
-            Safe("Home Screen Sections", RegisterHomeSection);
-        }
-
-        // Plugin Pages and the home section read the toggles live, nothing else to do.
-        RefreshEnabledFlags();
-    }
-
-    private void RegisterPluginPage()
-    {
-        var asm = ReflectionBridge.FindAssembly("Jellyfin.Plugin.PluginPages");
-        if (asm is null)
-        {
-            Set("Plugin Pages", false, null, Config.EnablePluginPage, false, "Not installed. The sidebar \"Vote\" page needs the Plugin Pages plugin; the standalone page /MediaVote/vote still works.");
-            return;
-        }
-
-        var version = asm.GetName().Version?.ToString();
-        if (_pagesRegistered)
-        {
-            return;
-        }
-
-        // Registered even when the toggle is off: IsEnabled is checked live by Plugin Pages, so toggling needs no restart.
-        var error = ReflectionBridge.InvokeWithJObject(asm, "Jellyfin.Plugin.PluginPages.PluginInterface", "RegisterPage", new Dictionary<string, object?>
-        {
-            ["Id"] = PluginPagesId,
-            ["Url"] = "/MediaVote/page",
-            ["DisplayText"] = "Vote",
-            ["Icon"] = "how_to_vote",
-            ["Version"] = 1,
-            ["IsEnabledAssembly"] = typeof(EntryPointRegistrar).Assembly.FullName,
-            ["IsEnabledClass"] = nameof(PluginPagesCallbacks),
-            ["IsEnabledMethod"] = nameof(PluginPagesCallbacks.IsMediaVotePageEnabled)
-        });
-        _pagesRegistered = error is null;
-        Set("Plugin Pages", true, version, Config.EnablePluginPage, _pagesRegistered, error ?? "\"Vote\" page registered in the sidebar (under Plugin Settings).");
-    }
-
-    private void RegisterHomeSection()
-    {
-        var asm = ReflectionBridge.FindAssembly("Jellyfin.Plugin.HomeScreenSections");
-        if (asm is null)
-        {
-            Set("Home Screen Sections", false, null, Config.EnableHomeSection, false, "Not installed (optional).");
-            return;
-        }
-
-        var version = asm.GetName().Version?.ToString();
-        if (_sectionRegistered)
-        {
-            return;
-        }
-
-        var error = ReflectionBridge.InvokeWithJObject(asm, "Jellyfin.Plugin.HomeScreenSections.PluginInterface", "RegisterSection", new Dictionary<string, object?>
-        {
-            ["id"] = SectionId,
-            ["displayText"] = "Media Vote: current leaders",
-            ["limit"] = 1,
-            ["route"] = null,
-            ["additionalData"] = null,
-            ["resultsAssembly"] = typeof(EntryPointRegistrar).Assembly.FullName,
-            ["resultsClass"] = typeof(HomeSectionResults).FullName,
-            ["resultsMethod"] = nameof(HomeSectionResults.GetResults)
-        });
-        _sectionRegistered = error is null;
-        Set("Home Screen Sections", true, version, Config.EnableHomeSection, _sectionRegistered, error ?? "Section \"Media Vote: current leaders\" registered. Enable it in Home Screen Sections' settings to show it.");
-    }
-
-    private void SyncCustomTab()
-    {
-        var plugin = _pluginManager.Plugins.FirstOrDefault(p => p.Id == CustomTabsPluginId)?.Instance as IHasPluginConfiguration;
-        if (plugin is null)
-        {
-            Set("Custom Tabs", false, null, Config.EnableCustomTab, false, "Not installed. The \"Vote\" tab needs the Custom Tabs plugin.");
-            return;
-        }
-
-        var version = _pluginManager.Plugins.First(p => p.Id == CustomTabsPluginId).Version?.ToString();
-        var config = plugin.Configuration;
-        var tabsProp = config.GetType().GetProperty("Tabs", BindingFlags.Public | BindingFlags.Instance);
-        var elementType = tabsProp?.PropertyType.GetElementType();
-        var titleProp = elementType?.GetProperty("Title");
-        var htmlProp = elementType?.GetProperty("ContentHtml");
-        if (tabsProp is null || elementType is null || titleProp is null || htmlProp is null || !tabsProp.CanWrite)
-        {
-            Set("Custom Tabs", true, version, Config.EnableCustomTab, false, "This Custom Tabs version stores tabs differently; add the tab manually (see the README).");
-            return;
-        }
-
-        var current = ((IEnumerable?)tabsProp.GetValue(config))?.Cast<object>().ToList() ?? new List<object>();
-        bool Ours(object t) => (htmlProp.GetValue(t) as string)?.Contains(TabMarker, StringComparison.Ordinal) == true;
-        var existing = current.Where(Ours).ToList();
-
-        if (Config.EnableCustomTab)
-        {
-            if (existing.Count == 1 && string.Equals(htmlProp.GetValue(existing[0]) as string, TabHtml(), StringComparison.Ordinal)
-                && string.Equals(titleProp.GetValue(existing[0]) as string, Config.TabTitle, StringComparison.Ordinal))
+            var error = ReflectionBridge.InvokeWithJObject(asm, "Jellyfin.Plugin.HomeScreenSections.PluginInterface", "RegisterSection", new Dictionary<string, object?>
             {
-                Set("Custom Tabs", true, version, true, true, "\"" + Config.TabTitle + "\" tab present.");
+                ["id"] = SectionId,
+                ["displayText"] = "Media Vote: current leaders",
+                ["limit"] = 1,
+                ["route"] = null,
+                ["additionalData"] = null,
+                ["resultsAssembly"] = typeof(EntryPointRegistrar).Assembly.FullName,
+                ["resultsClass"] = typeof(HomeSectionResults).FullName,
+                ["resultsMethod"] = nameof(HomeSectionResults.GetResults)
+            });
+            _sectionRegistered = error is null;
+            if (error is not null)
+            {
+                Set("Home Screen Sections", true, version, true, false, "Registration failed: " + error);
                 return;
             }
-
-            var next = new List<object>();
-            bool placed = false;
-            foreach (var t in current)
-            {
-                if (!Ours(t))
-                {
-                    next.Add(t);
-                }
-                else if (!placed)
-                {
-                    // Keep our tab where it already is so other tabs' indices (customTab_N) do not shift.
-                    titleProp.SetValue(t, Config.TabTitle);
-                    htmlProp.SetValue(t, TabHtml());
-                    next.Add(t);
-                    placed = true;
-                }
-            }
-
-            if (!placed)
-            {
-                var tab = Activator.CreateInstance(elementType)!;
-                titleProp.SetValue(tab, Config.TabTitle);
-                htmlProp.SetValue(tab, TabHtml());
-                next.Add(tab);
-            }
-
-            Save(plugin, config, tabsProp, elementType, next);
-            Set("Custom Tabs", true, version, true, true, "\"" + Config.TabTitle + "\" tab added to Custom Tabs (appended after your own tabs).");
-        }
-        else
-        {
-            if (existing.Count > 0)
-            {
-                Save(plugin, config, tabsProp, elementType, current.Where(t => !Ours(t)).ToList());
-            }
-
-            Set("Custom Tabs", true, version, false, false, "Vote tab disabled; only Media Vote's own tab was removed.");
-        }
-    }
-
-    private static void Save(IHasPluginConfiguration plugin, object config, PropertyInfo tabsProp, Type elementType, List<object> tabs)
-    {
-        var array = Array.CreateInstance(elementType, tabs.Count);
-        for (int i = 0; i < tabs.Count; i++)
-        {
-            array.SetValue(tabs[i], i);
         }
 
-        tabsProp.SetValue(config, array);
-        plugin.UpdateConfiguration((MediaBrowser.Model.Plugins.BasePluginConfiguration)config);
-    }
-
-    private void RefreshEnabledFlags()
-    {
-        lock (_status)
-        {
-            if (_status.TryGetValue("Plugin Pages", out var p))
-            {
-                _status["Plugin Pages"] = p with { Enabled = Config.EnablePluginPage };
-            }
-
-            if (_status.TryGetValue("Home Screen Sections", out var h))
-            {
-                _status["Home Screen Sections"] = h with { Enabled = Config.EnableHomeSection };
-            }
-        }
+        Set("Home Screen Sections", true, version, true, true, "Section registered. Also enable \"Media Vote: current leaders\" in Home Screen Sections' own settings." + (cfg.AdminPreviewOnly ? " Preview mode: only admins see results." : string.Empty));
     }
 
     private void Set(string name, bool detected, string? version, bool enabled, bool registered, string message)
     {
-        lock (_status)
+        lock (_lock)
         {
             _status[name] = new IntegrationStatus(name, detected, version, enabled, registered, message);
         }
@@ -268,13 +266,27 @@ public sealed class EntryPointRegistrar
 #pragma warning restore CA1031
         {
             _logger.LogWarning(ex, "Media Vote: {Integration} integration failed", name);
-            Set(name, true, null, true, false, "Error: " + ex.Message);
+            Set(name, true, null, false, false, "Error: " + ex.Message);
         }
     }
 }
 
-/// <summary>Called by Plugin Pages (by reflection) to decide whether to show our sidebar page.</summary>
+/// <summary>Called by Plugin Pages (by reflection) to decide whether to show our sidebar page. Never throws.</summary>
 public static class PluginPagesCallbacks
 {
-    public static bool IsMediaVotePageEnabled(string id) => Plugin.Instance?.Configuration.EnablePluginPage ?? false;
+    public static bool IsMediaVotePageEnabled(string id)
+    {
+        try
+        {
+            var c = Plugin.Instance?.Configuration;
+            // Plugin Pages asks without a user, so in preview mode the page is hidden from everyone.
+            return c is not null && AccessRules.ShowSidebarPage(c.EnablePluginPage, c.AdminPreviewOnly, KillSwitch.IsActive);
+        }
+#pragma warning disable CA1031
+        catch (Exception)
+#pragma warning restore CA1031
+        {
+            return false;
+        }
+    }
 }

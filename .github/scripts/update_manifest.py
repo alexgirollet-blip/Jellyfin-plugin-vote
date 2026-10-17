@@ -89,7 +89,7 @@ def main():
     version = {
         "version": args.version,
         "changelog": args.changelog.strip() or meta.get("changelog", ""),
-        "targetAbi": meta.get("targetAbi", "10.11.0.0"),
+        "targetAbi": meta["targetAbi"],
         "sourceUrl": args.source_url,
         "checksum": md5(args.zip),
         "timestamp": timestamp,

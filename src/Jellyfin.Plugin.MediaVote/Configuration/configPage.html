@@ -74,7 +74,16 @@
                             <label><input type="radio" name="mvVoters" value="all" checked> <span>All users</span></label>
                             <label><input type="radio" name="mvVoters" value="some"> <span>Selected users</span></label>
                         </div>
-                        <div class="mv-list" id="mvUserList" hidden></div>
+                        <div id="mvUserPicker" hidden>
+                            <div class="mv-field"><label for="mvUserSearch">Find users</label><input id="mvUserSearch" type="search" placeholder="Type a name" autocomplete="off"></div>
+                            <div class="mv-row">
+                                <button is="emby-button" type="button" class="raised emby-button" id="mvUserAll">Select all enabled</button>
+                                <button is="emby-button" type="button" class="raised emby-button" id="mvUserNone">Select none</button>
+                                <span id="mvUserCount" class="mv-muted" role="status" aria-live="polite"></span>
+                            </div>
+                            <div id="mvUserError"></div>
+                            <div class="mv-list" id="mvUserList" aria-label="Users"></div>
+                        </div>
                     </div>
                     <div class="mv-card">
                         <h3>What can be voted on</h3>
@@ -88,7 +97,7 @@
                                 <option value="HandPicked">Hand-picked titles</option>
                             </select>
                         </div>
-                        <div class="mv-list" id="mvLibList" hidden></div>
+                        <div id="mvLibBox" hidden><div id="mvLibError"></div><div class="mv-list" id="mvLibList"></div></div>
                         <div id="mvPickBox" hidden>
                             <div class="mv-field"><label for="mvPickSearch">Find titles</label><input id="mvPickSearch" type="search" placeholder="Type a title" autocomplete="off"></div>
                             <div class="mv-list" id="mvPickResults"></div>
@@ -145,15 +154,32 @@
             <!-- ===================== SETTINGS ===================== -->
             <section data-panel="settings" role="tabpanel" hidden>
                 <form id="mvSettingsForm" novalidate>
+                    <div id="sSettingsError"></div>
                     <div class="mv-card">
-                        <h3>Entry points</h3>
-                        <p class="mv-muted">All open the same voting screen. The banner can only be turned off if the Vote tab, the sidebar page or the standalone page is on.</p>
-                        <label class="mv-check"><input type="checkbox" id="sBanner"> <span>Banner at the top of the home page</span></label>
-                        <label class="mv-check"><input type="checkbox" id="sTab"> <span>"Vote" tab on the home page (needs the Custom Tabs plugin)</span></label>
-                        <label class="mv-check"><input type="checkbox" id="sPage"> <span>"Vote" page in the sidebar (needs the Plugin Pages plugin)</span></label>
+                        <h3>Entry points: turn them on one at a time</h3>
+                        <p class="mv-muted">A fresh install starts with every optional entry point OFF and preview mode ON (only administrators see anything). The admin page and the standalone page always work. Turn on ONE entry point, save, reload Jellyfin in your browser, check it (and the Status tab), then the next one. Go live from the Status tab when you are happy.</p>
+                        <label class="mv-check"><input type="checkbox" id="sBanner"> <span>Banner at the top of the home page (needs File Transformation; adds one script tag to the web client)</span></label>
+                        <label class="mv-check"><input type="checkbox" id="sTab"> <span>I have added the Vote tab to Custom Tabs by hand (see "Vote tab" below; also adds the script tag)</span></label>
+                        <label class="mv-check"><input type="checkbox" id="sPage"> <span>"Vote" page in the sidebar (needs Plugin Pages; hidden from everyone while preview mode is on)</span></label>
                         <label class="mv-check"><input type="checkbox" id="sSection"> <span>"Current leaders" row (needs Home Screen Sections; enable the section there too)</span></label>
-                        <label class="mv-check"><input type="checkbox" id="sStandalone"> <span>Standalone page at <code>/MediaVote/vote</code> (own login form)</span></label>
-                        <div class="mv-field"><label for="sTabTitle">Tab title</label><input id="sTabTitle" maxlength="40"></div>
+                        <label class="mv-check"><input type="checkbox" id="sStandalone"> <span>Standalone page at <code>/MediaVote/vote</code> (own login form, injects nothing)</span></label>
+                    </div>
+                    <div class="mv-card" id="sVoteTab">
+                        <h3>Vote tab (Custom Tabs): manual, safe setup</h3>
+                        <p>Media Vote never changes Custom Tabs' settings. To add a Vote tab yourself:</p>
+                        <ol>
+                            <li>Make sure preview mode is OFF first (or your friends will see an empty tab while you test).</li>
+                            <li>Open <strong>Dashboard → Plugins → Custom Tabs</strong> and add a new tab. Title: <code>Vote</code>.</li>
+                            <li>Paste exactly the HTML below as its content. Do not add anything else: Custom Tabs 0.2.x pastes tab HTML into the home page's JavaScript, so a single apostrophe, backslash or dollar sign anywhere in a tab can blank the home screen.</li>
+                            <li>Save in Custom Tabs, then tick "I have added the Vote tab" above and save here.</li>
+                            <li>Reload Jellyfin in the browser (phones: fully close and reopen the app).</li>
+                        </ol>
+                        <textarea class="mv-code" id="sSnippet" readonly aria-label="HTML for the Custom Tabs Vote tab"></textarea>
+                        <div class="mv-row">
+                            <button is="emby-button" type="button" class="raised emby-button" id="sCopySnippet">Copy</button>
+                            <span id="sCopyResult" class="mv-muted" role="status" aria-live="polite"></span>
+                        </div>
+                        <p class="mv-muted">If the tab ever shows only "Media Vote is loading", the Media Vote script was not loaded (banner and tab both off, preview mode for that user, or the DISABLE file): the page itself is never affected.</p>
                     </div>
                     <div class="mv-card">
                         <h3>General</h3>
@@ -167,6 +193,7 @@
                     <div class="mv-card">
                         <h3>Protected (never votable, never deleted)</h3>
                         <p class="mv-muted">Libraries:</p>
+                        <div id="sProtLibsError"></div>
                         <div class="mv-list" id="sProtLibs"></div>
                         <div class="mv-field"><label for="sProtSearch">Protect a title</label><input id="sProtSearch" type="search" placeholder="Type a title" autocomplete="off"></div>
                         <div class="mv-list" id="sProtResults"></div>
@@ -465,11 +492,11 @@
 
         // ---------------- new vote
         function radioValue(name) { var c = page.querySelector('input[name="' + name + '"]:checked'); return c ? c.value : null; }
-        Array.prototype.forEach.call(page.querySelectorAll('input[name="mvVoters"]'), function (r) { r.addEventListener('change', function () { $('#mvUserList').hidden = radioValue('mvVoters') !== 'some'; }); });
+        Array.prototype.forEach.call(page.querySelectorAll('input[name="mvVoters"]'), function (r) { r.addEventListener('change', function () { $('#mvUserPicker').hidden = radioValue('mvVoters') !== 'some'; }); });
         Array.prototype.forEach.call(page.querySelectorAll('input[name="mvOutcome"]'), function (r) {
             r.addEventListener('change', function () { var del = radioValue('mvOutcome') === 'DeleteAutomatically'; $('#mvDeleteBox').hidden = !del; if (!del) { $('#mvDeleteConfirm').checked = false; } });
         });
-        $('#mvScope').addEventListener('change', function () { var v = $('#mvScope').value; $('#mvLibList').hidden = v !== 'SpecificLibraries'; $('#mvPickBox').hidden = v !== 'HandPicked'; });
+        $('#mvScope').addEventListener('change', function () { var v = $('#mvScope').value; $('#mvLibBox').hidden = v !== 'SpecificLibraries'; $('#mvPickBox').hidden = v !== 'HandPicked'; });
         $('#mvKeep').addEventListener('change', function () { $('#mvKeepCountBox').hidden = !$('#mvKeep').checked; });
 
         function renderPicker(listSel, store, results) {
@@ -595,42 +622,132 @@
             });
         }
 
-        function loadSettings() {
-            return Promise.all([api('GET', 'Settings'), api('GET', 'Libraries'), api('GET', 'Users')]).then(function (res) {
-                var s = res[0];
+        // Each section loads on its own: a failure in one never hides the others.
+        function sectionError(sel, text, retry) {
+            var box = $(sel);
+            box.innerHTML = '';
+            if (!text) { return; }
+            box.appendChild(h('div', { className: 'mv-warn', role: 'alert' }, [h('div', { text: text }), retry ? btn('Retry', retry) : null]));
+        }
+
+        function loadSettingsData() {
+            sectionError('#sSettingsError', null);
+            return api('GET', 'Settings').then(function (s) {
                 data.settings = s;
-                data.libraries = res[1];
-                data.users = res[2];
                 $('#sBanner').checked = s.enableBanner; $('#sTab').checked = s.enableCustomTab; $('#sPage').checked = s.enablePluginPage;
-                $('#sSection').checked = s.enableHomeSection; $('#sStandalone').checked = s.enableStandalonePage; $('#sTabTitle').value = s.tabTitle;
+                $('#sSection').checked = s.enableHomeSection; $('#sStandalone').checked = s.enableStandalonePage;
                 $('#sTz').value = s.timeZoneId; $('#sSoon').value = s.closingSoonHours; $('#sResultDays').value = s.resultBannerDays; $('#sPlayback').checked = s.usePlaybackReporting;
                 $('#sHookUrl').value = s.webhookUrl; $('#sHookKind').value = s.webhookKind; $('#sHookOpen').checked = s.webhookOnOpened; $('#sHookSoon').checked = s.webhookOnClosingSoon; $('#sHookResults').checked = s.webhookOnResults;
                 renderArr(s);
-                var libs = $('#sProtLibs'); libs.innerHTML = '';
-                var libList = $('#mvLibList'); libList.innerHTML = '';
-                data.libraries.forEach(function (l) {
-                    libs.appendChild(h('label', {}, [h('input', { type: 'checkbox', value: l.id, checked: s.protectedLibraryIds.indexOf(l.id) >= 0 }), h('span', { text: l.name + (l.collectionType ? ' (' + l.collectionType + ')' : '') })]));
-                    libList.appendChild(h('label', {}, [h('input', { type: 'checkbox', value: l.id, disabled: l.protected }), h('span', { text: l.name + (l.protected ? ' — protected' : '') })]));
-                });
-                var users = $('#mvUserList'); users.innerHTML = '';
-                data.users.forEach(function (u) { users.appendChild(h('label', {}, [h('input', { type: 'checkbox', value: u.id, disabled: u.disabled }), h('span', { text: u.name + (u.disabled ? ' (disabled)' : '') + (u.admin ? ' · admin' : '') })])); });
                 data.protItems = {};
                 s.protectedItemIds.forEach(function (id) { data.protItems[id] = { id: id, name: (s.protectedItemNames && s.protectedItemNames[id]) || id }; });
                 renderPicked();
-            }).catch(function (e) { msg('Could not load settings: ' + e.message, true); });
+                renderProtectedLibraries();
+            }, function (e) {
+                sectionError('#sSettingsError', 'Could not load settings: ' + e.message, loadSettingsData);
+            });
+        }
+
+        function loadLibraries() {
+            sectionError('#mvLibError', null);
+            sectionError('#sProtLibsError', null);
+            return api('GET', 'Libraries').then(function (libs) {
+                data.libraries = libs || [];
+                var libList = $('#mvLibList');
+                libList.innerHTML = '';
+                data.libraries.forEach(function (l) {
+                    libList.appendChild(h('label', {}, [h('input', { type: 'checkbox', value: l.id, disabled: l.protected }), h('span', { text: l.name + (l.protected ? ' (protected)' : '') })]));
+                });
+                if (!data.libraries.length) { libList.appendChild(h('span', { className: 'mv-muted', text: 'No movie or TV libraries found.' })); }
+                renderProtectedLibraries();
+            }, function (e) {
+                sectionError('#mvLibError', 'Could not load libraries: ' + e.message, loadLibraries);
+                sectionError('#sProtLibsError', 'Could not load libraries: ' + e.message, loadLibraries);
+            });
+        }
+
+        function renderProtectedLibraries() {
+            var libs = $('#sProtLibs');
+            libs.innerHTML = '';
+            var prot = (data.settings && data.settings.protectedLibraryIds) || [];
+            (data.libraries || []).forEach(function (l) {
+                libs.appendChild(h('label', {}, [h('input', { type: 'checkbox', value: l.id, checked: prot.indexOf(l.id) >= 0 }), h('span', { text: l.name + (l.collectionType ? ' (' + l.collectionType + ')' : '') })]));
+            });
+        }
+
+        function loadUsers() {
+            sectionError('#mvUserError', null);
+            $('#mvUserList').innerHTML = '';
+            $('#mvUserList').appendChild(h('span', { className: 'mv-muted', text: 'Loading users…' }));
+            return api('GET', 'Users').then(function (users) {
+                data.users = users || [];
+                renderUsers();
+            }, function (e) {
+                $('#mvUserList').innerHTML = '';
+                sectionError('#mvUserError', 'Could not load the user list: ' + e.message, loadUsers);
+                updateUserCount();
+            });
+        }
+
+        // Lists ALL users (enabled and disabled). Disabled accounts are marked: they cannot vote until re-enabled.
+        function renderUsers() {
+            var list = $('#mvUserList');
+            var selected = {};
+            checkedValues('#mvUserList').forEach(function (id) { selected[id] = true; });
+            list.innerHTML = '';
+            data.users.forEach(function (u) {
+                var cb = h('input', { type: 'checkbox', value: u.id, checked: !!selected[u.id], 'data-disabled-user': u.disabled ? '1' : null });
+                cb.addEventListener('change', updateUserCount);
+                list.appendChild(h('label', { 'data-name': (u.name || '').toLowerCase() }, [cb, h('span', { text: u.name + (u.admin ? ' · admin' : '') }), u.disabled ? h('span', { className: 'mv-pill', text: 'disabled account: cannot vote' }) : null]));
+            });
+            if (!data.users.length) { list.appendChild(h('span', { className: 'mv-muted', text: 'No users found.' })); }
+            filterUsers();
+        }
+
+        function filterUsers() {
+            var term = ($('#mvUserSearch').value || '').trim().toLowerCase();
+            Array.prototype.forEach.call(page.querySelectorAll('#mvUserList label'), function (l) {
+                l.hidden = term && (l.getAttribute('data-name') || '').indexOf(term) < 0;
+            });
+            updateUserCount();
+        }
+
+        function updateUserCount() {
+            var total = (data.users || []).length;
+            var n = checkedValues('#mvUserList').length;
+            $('#mvUserCount').textContent = n + ' of ' + total + ' selected';
+        }
+
+        $('#mvUserSearch').addEventListener('input', filterUsers);
+        $('#mvUserAll').addEventListener('click', function () {
+            Array.prototype.forEach.call(page.querySelectorAll('#mvUserList label:not([hidden]) input'), function (c) { if (!c.getAttribute('data-disabled-user')) { c.checked = true; } });
+            updateUserCount();
+        });
+        $('#mvUserNone').addEventListener('click', function () {
+            Array.prototype.forEach.call(page.querySelectorAll('#mvUserList input'), function (c) { c.checked = false; });
+            updateUserCount();
+        });
+
+        // Copy button: in-page only (select + execCommand), with a manual fallback message.
+        $('#sCopySnippet').addEventListener('click', function () {
+            var ta = $('#sSnippet');
+            ta.focus();
+            ta.select();
+            var ok = false;
+            try { ok = document.execCommand && document.execCommand('copy'); } catch (e) { ok = false; }
+            $('#sCopyResult').textContent = ok ? 'Copied.' : 'The text is selected: copy it with your device (long-press or Ctrl+C).';
+        });
+
+        function loadSettings() {
+            return Promise.allSettled ? Promise.allSettled([loadSettingsData(), loadLibraries(), loadUsers()]) : loadSettingsData().then(loadLibraries).then(loadUsers);
         }
 
         $('#mvSettingsForm').addEventListener('submit', function (e) {
             e.preventDefault();
             var s = data.settings || {};
-            if (!$('#sBanner').checked && !$('#sTab').checked && !$('#sPage').checked && !$('#sStandalone').checked) {
-                msg('The banner can only be turned off if the Vote tab, the sidebar page or the standalone page is on.', true);
-                $('#sBanner').checked = true;
-                return;
-            }
             var body = {
                 enableBanner: $('#sBanner').checked, enableCustomTab: $('#sTab').checked, enablePluginPage: $('#sPage').checked,
-                enableHomeSection: $('#sSection').checked, enableStandalonePage: $('#sStandalone').checked, tabTitle: $('#sTabTitle').value,
+                enableHomeSection: $('#sSection').checked, enableStandalonePage: $('#sStandalone').checked, tabTitle: s.tabTitle || 'Vote',
                 timeZoneId: $('#sTz').value, closingSoonHours: num('#sSoon'), resultBannerDays: num('#sResultDays'), usePlaybackReporting: $('#sPlayback').checked,
                 protectedItemIds: Object.keys(data.protItems), protectedLibraryIds: checkedValues('#sProtLibs'),
                 webhookUrl: $('#sHookUrl').value, webhookKind: $('#sHookKind').value, webhookOnOpened: $('#sHookOpen').checked,
@@ -646,39 +763,114 @@
             api('POST', 'Settings', body).then(function (r) {
                 if (r && r.ok === false) { msg(r.errors, true); return; }
                 msg('Settings saved. Phone users must fully close and reopen the Jellyfin app to see entry-point changes.');
-                loadSettings(); loadOverview();
+                loadSettingsData(); loadOverview();
             }, fail).then(function () { loading(false); });
         });
 
         // ---------------- status & setup
+        function table(headers, rows) {
+            var tb = h('tbody');
+            rows.forEach(function (r) { tb.appendChild(h('tr', {}, r.map(function (c) { return h('td', typeof c === 'string' ? { text: c } : {}, typeof c === 'string' ? [] : [c]); }))); });
+            return h('div', { className: 'mv-table-wrap' }, [h('table', { className: 'mv-table' }, [h('thead', {}, [h('tr', {}, headers.map(function (t) { return h('th', { text: t }); }))]), tb])]);
+        }
+
+        function okText(ok) { return h('span', { className: ok ? 'mv-ok' : 'mv-pill', text: ok ? 'OK' : 'PROBLEM' }); }
+
         function renderStatus(o) {
             var box = $('#mvStatus');
             box.innerHTML = '';
-            var inj = o.injection;
-            var card = h('div', { className: 'mv-card' }, [h('h3', { text: 'Web client injection' }), h('p', { className: inj.mode === 'Failed' ? 'mv-warn' : 'mv-ok', text: inj.mode + ': ' + inj.message })]);
-            if (inj.dockerFix) { card.appendChild(h('div', { className: 'mv-warn' }, [h('strong', { text: 'How to fix: ' }), h('span', { text: inj.dockerFix })])); }
-            card.appendChild(h('div', { className: 'mv-row' }, [btn('Re-run injection and registration', function () {
-                api('POST', 'Reinject').then(function () { msg('Done. Users must reload (phones: fully close and reopen the app).'); loadOverview(); }, fail);
-            })]));
-            box.appendChild(card);
-            var ints = h('div', { className: 'mv-card' }, [h('h3', { text: 'Optional integrations (detected at runtime)' })]);
-            var tb = h('tbody');
-            (o.integrations || []).forEach(function (i) {
-                tb.appendChild(h('tr', {}, [h('td', { text: i.name }), h('td', { text: i.detected ? 'Installed ' + (i.version || '') : 'Not installed' }), h('td', { text: i.enabled ? 'On' : 'Off' }), h('td', { text: i.message })]));
-            });
-            ints.appendChild(h('div', { className: 'mv-table-wrap' }, [h('table', { className: 'mv-table' }, [h('thead', {}, [h('tr', {}, ['Plugin', 'Detected', 'Toggle', 'Status'].map(function (t) { return h('th', { text: t }); }))]), tb])]));
-            box.appendChild(ints);
-            var tab = h('textarea', { className: 'mv-code', readonly: true, 'aria-label': 'Custom Tabs HTML' });
-            tab.value = o.customTabHtml;
+            $('#sSnippet').value = o.customTabSnippet || '';
+
+            if (o.killSwitch && o.killSwitch.active) {
+                box.appendChild(h('div', { className: 'mv-warn', role: 'alert' }, [
+                    h('strong', { text: 'Disabled by file. ' }),
+                    h('span', { text: 'The file ' + o.killSwitch.path + ' exists, so Media Vote injects nothing, registers no entry point, hides itself from all users and pauses vote resolution. Delete the file and restart Jellyfin to re-enable it.' })
+                ]));
+            }
+
+            // Preview / go live
+            var vis = h('div', { className: 'mv-card' });
+            if (o.previewOnly) {
+                vis.appendChild(h('h3', { text: 'Preview mode is ON' }));
+                vis.appendChild(h('p', { text: 'Only administrators see Media Vote. Friends see nothing, and the server refuses their voting calls. Turn entry points on one at a time (Settings), test them, then go live.' }));
+                var goLive = btn('Go live', function () {
+                    confirmBox(vis, 'Go live? Every enabled entry point becomes visible to all users (the sidebar page appears in everyone\u2019s menu).', 'Go live', function () {
+                        api('POST', 'Visibility', { previewOnly: false }).then(function () { msg('Media Vote is live. Phone users must fully close and reopen the app.'); loadOverview(); }, fail);
+                    });
+                }, true);
+                vis.appendChild(h('div', { className: 'mv-row' }, [goLive]));
+            } else {
+                vis.appendChild(h('h3', { text: 'Live: visible to all users' }));
+                vis.appendChild(h('div', { className: 'mv-row' }, [btn('Back to preview (admins only)', function () {
+                    api('POST', 'Visibility', { previewOnly: true }).then(function () { msg('Preview mode is on again.'); loadOverview(); }, fail);
+                })]));
+            }
+            box.appendChild(vis);
+
+            // Entry points
+            var ep = o.entryPoints || {};
             box.appendChild(h('div', { className: 'mv-card' }, [
-                h('h3', { text: 'Vote tab: manual setup (only if automatic setup is unavailable)' }),
-                h('p', { text: 'Media Vote adds its tab to Custom Tabs automatically when the "Vote tab" toggle is on. If your Custom Tabs version cannot be updated automatically: Dashboard → Plugins → Custom Tabs → add a tab, title "Vote", and paste this HTML as its content. Save, then reload.' }),
-                tab
+                h('h3', { text: 'Entry points' }),
+                table(['Entry point', 'State'], [
+                    ['Home banner', ep.banner ? 'ON' : 'off'],
+                    ['Vote tab (Custom Tabs, added by hand)', ep.tab ? 'ON' : 'off'],
+                    ['Sidebar page (Plugin Pages)', ep.page ? (o.previewOnly ? 'ON (hidden while in preview)' : 'ON') : 'off'],
+                    ['Current leaders row (Home Screen Sections)', ep.section ? 'ON' : 'off'],
+                    ['Standalone page /MediaVote/vote', ep.standalone ? 'ON' : 'off']
+                ]),
+                h('p', { className: 'mv-muted', text: 'Change them on the Settings tab.' })
             ]));
+
+            // Self-check
+            var sc = h('div', { className: 'mv-card' }, [h('h3', { text: 'Jellyfin API self-check' + (o.selfCheckUtc ? '' : ' (not run yet)') })]);
+            sc.appendChild(h('p', { className: 'mv-muted', text: 'Media Vote ' + (o.pluginVersion || '') + ' is built for Jellyfin ' + o.builtForJellyfin + '. Each line calls one Jellyfin API once.' }));
+            var scBody = h('div');
+            sc.appendChild(scBody);
+            function drawChecks(list) {
+                scBody.innerHTML = '';
+                scBody.appendChild(table(['Check', 'Result', 'Details'], (list || []).map(function (r) { return [r.name, okText(r.ok), r.detail]; })));
+            }
+            drawChecks(o.selfCheck);
+            sc.appendChild(h('div', { className: 'mv-row' }, [btn('Run the self-check again', function () {
+                api('POST', 'SelfCheck').then(function (r) { drawChecks(r.selfCheck); }, fail);
+            })]));
+            box.appendChild(sc);
+
+            // Injection
+            var inj = o.injection || {};
+            var injCard = h('div', { className: 'mv-card' }, [h('h3', { text: 'Web client script (File Transformation)' }), h('p', { className: inj.mode === 'Unavailable' ? 'mv-warn' : 'mv-ok', text: inj.mode + ': ' + inj.message })]);
+            if (inj.leftoverDirectInjection) {
+                injCard.appendChild(h('div', { className: 'mv-warn', role: 'alert', text: 'index.html in the Jellyfin web folder still contains a Media Vote script tag written by an older version (data-mediavote-script). 1.0.1.0 never writes there. It is harmless but can be removed: restore index.html.mediavote-backup next to it, or reinstall/upgrade the Jellyfin container.' }));
+            }
+            injCard.appendChild(h('div', { className: 'mv-row' }, [btn('Re-apply entry points', function () {
+                api('POST', 'Reapply').then(function () { msg('Done. Users must reload (phones: fully close and reopen the app).'); loadOverview(); }, fail);
+            })]));
+            box.appendChild(injCard);
+
+            // Custom Tabs (read-only)
+            var ct = h('div', { className: 'mv-card' }, [h('h3', { text: 'Custom Tabs check (read-only)' })]);
+            var findings = o.customTabFindings || [];
+            var problems = findings.filter(function (f) { return f.kind !== 'MediaVoteTab'; });
+            if (!problems.length) {
+                ct.appendChild(h('p', { className: 'mv-ok', text: findings.length ? 'The Vote tab uses the safe snippet. No problems found.' : 'No problems found in Custom Tabs\u2019 saved tabs.' }));
+            }
+            problems.forEach(function (f) { ct.appendChild(h('div', { className: 'mv-warn', role: 'alert', text: f.message })); });
+            if (problems.some(function (f) { return f.kind === 'LeftoverV100'; })) {
+                ct.appendChild(h('p', { text: 'To fix: Dashboard → Plugins → Custom Tabs → delete the tab named above (its content starts with <div data-mediavote-mount="tab"…><script>…) → Save → reload Jellyfin. Media Vote will not change Custom Tabs for you.' }));
+            }
+            box.appendChild(ct);
+
+            // Integrations
+            box.appendChild(h('div', { className: 'mv-card' }, [
+                h('h3', { text: 'Optional plugins (detected at runtime)' }),
+                table(['Plugin', 'Detected', 'Toggle', 'Status'], (o.integrations || []).map(function (i) { return [i.name, i.detected ? 'Installed ' + (i.version || '') : 'Not installed', i.enabled ? 'On' : 'Off', i.message]; }))
+            ]));
+
             box.appendChild(h('div', { className: 'mv-card' }, [
                 h('h3', { text: 'Server' }),
                 h('p', { text: 'Time zone: ' + o.timeZone + (o.timeZoneFound ? '' : ' (configured zone not found, using UTC!)') + ' · server time ' + o.nowLocal }),
                 h('p', { text: 'Jellyfin runs as ' + o.processUser + '. Vote data: ' + o.dataDirectory }),
+                h('p', { text: 'Emergency switch-off: create the file ' + (o.killSwitch && o.killSwitch.path ? o.killSwitch.path : o.dataDirectory + '/DISABLE') + ' and restart Jellyfin.' }),
                 h('p', { className: 'mv-muted', text: 'Standalone voting page: ' + ApiClient.getUrl('MediaVote/vote') })
             ]));
         }
@@ -694,8 +886,8 @@
         }
 
         page.addEventListener('pageshow', function () {
-            loading(true);
-            Promise.all([loadOverview(), loadSettings()]).then(function () { loading(false); }, function () { loading(false); });
+            loadOverview();
+            loadSettings();
         });
     })();
     </script>

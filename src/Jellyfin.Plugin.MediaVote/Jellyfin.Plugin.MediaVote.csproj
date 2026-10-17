@@ -2,8 +2,9 @@
 
   <!--
     JellyfinTarget selects the server line this build is for.
-    10.11 (default): net9.0 + Jellyfin.Controller 10.11.0 (oldest 10.11 package, so the
-    DLL loads on every 10.11.x server).
+    10.11 (default): net9.0 + Jellyfin.Controller 10.11.10. Jellyfin removes public members
+    between patch releases (10.11.10 dropped IUserManager.Users), so the package version must
+    equal build.yaml targetAbi; CI checks this and JIT-verifies the DLL against that version.
     A Jellyfin 12 build can later be produced with -p:JellyfinTarget=12 once tested.
   -->
   <PropertyGroup>
@@ -12,7 +13,7 @@
 
   <PropertyGroup Condition="'$(JellyfinTarget)' == '10.11'">
     <TargetFramework>net9.0</TargetFramework>
-    <JellyfinPackageVersion>10.11.0</JellyfinPackageVersion>
+    <JellyfinPackageVersion>10.11.10</JellyfinPackageVersion>
     <DefineConstants>$(DefineConstants);JELLYFIN_10_11</DefineConstants>
   </PropertyGroup>
 
