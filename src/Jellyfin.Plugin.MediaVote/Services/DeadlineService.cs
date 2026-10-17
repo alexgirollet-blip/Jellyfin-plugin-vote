@@ -30,6 +30,12 @@ public sealed class DeadlineService : BackgroundService
     {
         try
         {
+            if (KillSwitch.IsActive)
+            {
+                // Kill switch also pauses resolution (and therefore any deletion). Due votes resolve once it is removed.
+                return;
+            }
+
             var hours = Plugin.Instance?.Configuration.ClosingSoonHours ?? 24;
             if (hours > 0)
             {

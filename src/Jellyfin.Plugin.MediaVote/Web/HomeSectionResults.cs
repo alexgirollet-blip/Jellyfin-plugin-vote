@@ -1,6 +1,8 @@
 using System;
 using System.Linq;
 using Jellyfin.Plugin.MediaVote.Core;
+using MediaVoteKillSwitch = Jellyfin.Plugin.MediaVote.Services.KillSwitch;
+using MediaVoteUsers = Jellyfin.Plugin.MediaVote.Services.JellyfinUserDirectory;
 using MediaBrowser.Controller.Dto;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
@@ -31,9 +33,24 @@ public sealed class HomeSectionResults
 
     public QueryResult<BaseItemDto> GetResults(SectionPayload payload)
     {
+        try
+        {
+            return GetResultsCore(payload);
+        }
+#pragma warning disable CA1031 // must never break Home Screen Sections' rendering
+        catch (Exception)
+#pragma warning restore CA1031
+        {
+            return new QueryResult<BaseItemDto>();
+        }
+    }
+
+    private static QueryResult<BaseItemDto> GetResultsCore(SectionPayload payload)
+    {
         var empty = new QueryResult<BaseItemDto>();
         var sp = Services;
-        if (sp is null || payload is null || !(Plugin.Instance?.Configuration.EnableHomeSection ?? false))
+        var cfg = Plugin.Instance?.Configuration;
+        if (sp is null || payload is null || cfg is null || !cfg.EnableHomeSection || MediaVoteKillSwitch.IsActive)
         {
             return empty;
         }
@@ -46,7 +63,7 @@ public sealed class HomeSectionResults
         }
 
         var user = sp.GetRequiredService<IUserManager>().GetUserById(payload.UserId);
-        if (user is null)
+        if (user is null || AccessRules.IsHiddenFor(MediaVoteKillSwitch.IsActive, cfg.AdminPreviewOnly, sp.GetRequiredService<MediaVoteUsers>().IsAdministrator(payload.UserId)))
         {
             return empty;
         }

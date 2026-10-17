@@ -48,7 +48,17 @@ public sealed class MediaVoteController : MediaVoteControllerBase
 
     [HttpGet("client.js")]
     [AllowAnonymous]
-    public ActionResult ClientJs() => Asset("client.js", "application/javascript; charset=utf-8");
+    public ActionResult ClientJs()
+    {
+        if (KillSwitch.IsActive)
+        {
+            // Kill switch: serve an inert script so even a cached tag does nothing.
+            Response.Headers.CacheControl = "no-store";
+            return Content("/* Media Vote is disabled by the DISABLE file. */", "application/javascript; charset=utf-8");
+        }
+
+        return Asset("client.js", "application/javascript; charset=utf-8");
+    }
 
     [HttpGet("client.css")]
     [AllowAnonymous]
@@ -75,6 +85,24 @@ public sealed class MediaVoteController : MediaVoteControllerBase
         var userId = CurrentUserId;
         var cfg = Config;
         var now = _votes.Clock.UtcNow;
+        bool isAdmin = _users.IsAdministrator(userId);
+        if (AccessRules.IsHiddenFor(KillSwitch.IsActive, cfg.AdminPreviewOnly, isAdmin))
+        {
+            // Disabled, or preview mode for a non-admin: tell the client to render nothing at all.
+            return Json(new
+            {
+                serverTimeUtc = now,
+                isAdmin,
+                disabled = KillSwitch.IsActive,
+                preview = cfg.AdminPreviewOnly,
+                hidden = true,
+                entryPoints = new { banner = false, tab = false, page = false, standalone = cfg.EnableStandalonePage },
+                closingSoonHours = cfg.ClosingSoonHours,
+                active = (object?)null,
+                lastResult = (object?)null
+            });
+        }
+
         var zone = TimeZoneHelper.Find(cfg.TimeZoneId);
         var session = _votes.GetOpenSession();
         object? active = null;
@@ -129,7 +157,10 @@ public sealed class MediaVoteController : MediaVoteControllerBase
         return Json(new
         {
             serverTimeUtc = now,
-            isAdmin = _users.IsAdministrator(userId),
+            isAdmin,
+            disabled = false,
+            preview = cfg.AdminPreviewOnly,
+            hidden = false,
             entryPoints = new { banner = cfg.EnableBanner, tab = cfg.EnableCustomTab, page = cfg.EnablePluginPage, standalone = cfg.EnableStandalonePage },
             closingSoonHours = cfg.ClosingSoonHours,
             active,
@@ -142,13 +173,19 @@ public sealed class MediaVoteController : MediaVoteControllerBase
     public ActionResult Items([FromQuery] string? search, [FromQuery] string? type, [FromQuery] string? genre, [FromQuery] string? sort, [FromQuery] bool desc = false, [FromQuery] bool mine = false, [FromQuery] int page = 0, [FromQuery] int pageSize = 30)
     {
         var userId = CurrentUserId;
+        bool isAdmin = _users.IsAdministrator(userId);
+        var blocked = Blocked(isAdmin);
+        if (blocked is not null)
+        {
+            return blocked;
+        }
+
         var session = _votes.GetOpenSession();
         if (session is null)
         {
             return Error(404, VoteErrors.SessionNotOpen, "There is no active vote right now.");
         }
 
-        bool isAdmin = _users.IsAdministrator(userId);
         if (!_votes.IsEligible(session, userId) && !isAdmin)
         {
             return Error(403, VoteErrors.NotEligible, "You are not taking part in this vote.");
@@ -205,6 +242,13 @@ public sealed class MediaVoteController : MediaVoteControllerBase
         _ => "pending"
     };
 
+    /// <summary>Server-side enforcement of the kill switch and of preview mode (admins only).</summary>
+    private ActionResult? Blocked(bool isAdmin)
+    {
+        var reason = AccessRules.BlockReason(KillSwitch.IsActive, Config.AdminPreviewOnly, isAdmin);
+        return reason is { } r ? Error(403, r.Code, r.Message) : null;
+    }
+
     private static string? Limit(string? s, int max) => s is null ? null : (s.Length > max ? s[..max] : s);
 
     private ActionResult Apply(VoteRequest? body, Func<VoteSession, Voter, VoteRequest, OpResult> op, Func<VoteRequest, Guid>? visibilityTarget)
@@ -218,6 +262,12 @@ public sealed class MediaVoteController : MediaVoteControllerBase
         if (userId == Guid.Empty)
         {
             return Error(401, "unauthorized");
+        }
+
+        var blocked = Blocked(_users.IsAdministrator(userId));
+        if (blocked is not null)
+        {
+            return blocked;
         }
 
         var session = _votes.GetOpenSession();

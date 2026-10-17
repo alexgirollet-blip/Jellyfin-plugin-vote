@@ -22,7 +22,14 @@ const items = Array.from({ length: 45 }, (_, i) => ({
 }));
 
 function statusFor(state) {
+    if (state.hidden || state.disabled) {
+        return { serverTimeUtc: new Date().toISOString(), isAdmin: false, disabled: !!state.disabled, preview: !!state.hidden, hidden: true,
+            entryPoints: { banner: false, tab: false, page: false, standalone: true }, closingSoonHours: 24, active: null, lastResult: null };
+    }
     return {
+        preview: !!state.adminPreview,
+        hidden: false,
+        disabled: false,
         serverTimeUtc: new Date().toISOString(),
         isAdmin: false,
         entryPoints: { banner: true, tab: true, page: true, standalone: true },
@@ -46,6 +53,7 @@ const harness = `<!DOCTYPE html><html><head><meta name="viewport" content="width
   <div class="tabContent pageTabContent" id="favoritesTab" data-index="1"><div class="sections"></div></div>
 </div>
 <div id="tabHost"></div>
+<div id="customTabMount"><div data-mediavote-mount="tab" class="mediavote-tab-host">Media Vote is loading. If this stays empty, reload the page.</div></div>
 <button id="outside">outside</button>
 <script>
   window.ApiClient = { accessToken: function(){return 'tok';}, getCurrentUserId: function(){return 'u1';}, serverAddress: function(){return '${ORIGIN}';},
@@ -78,10 +86,18 @@ function check(cond, msg) {
             const url = new URL(route.request().url());
             const p = url.pathname;
             if (p === '/web/index.html') { return route.fulfill({ contentType: 'text/html', body: harness }); }
-            if (p === '/MediaVote/client.js') { return route.fulfill({ contentType: 'application/javascript', body: fs.readFileSync(path.join(assets, 'client.js'), 'utf8') }); }
+            if (p === '/MediaVote/client.js') {
+                if (state.clientStatus) { return route.fulfill({ status: state.clientStatus, body: 'error' }); }
+                return route.fulfill({ contentType: 'application/javascript', body: fs.readFileSync(path.join(assets, 'client.js'), 'utf8') });
+            }
             if (p === '/MediaVote/client.css') { return route.fulfill({ contentType: 'text/css', body: fs.readFileSync(path.join(assets, 'client.css'), 'utf8') }); }
-            if (p === '/MediaVote/Status') { return route.fulfill({ contentType: 'application/json', body: JSON.stringify(statusFor(state)) }); }
+            if (p === '/MediaVote/Status') {
+                state.statusCalls = (state.statusCalls || 0) + 1;
+                if (state.statusError) { return route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'server_error', message: 'Media Vote error: boom' }) }); }
+                return route.fulfill({ contentType: 'application/json', body: JSON.stringify(statusFor(state)) });
+            }
             if (p === '/MediaVote/Items') {
+                state.itemsCalls = (state.itemsCalls || 0) + 1;
                 const pageNo = Number(url.searchParams.get('page') || 0);
                 const size = Number(url.searchParams.get('pageSize') || 30);
                 return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ total: items.length, page: pageNo, pageSize: size, genres: ['Drama'], items: items.slice(pageNo * size, pageNo * size + size) }) });
@@ -131,19 +147,19 @@ function check(cond, msg) {
     await page.click('.mediavote-banner-main');
     await page.waitForSelector('#mediavote-overlay .mediavote-card');
     check(await page.evaluate(() => document.body.style.position === 'fixed'), 'background scroll locked while overlay is open');
-    check(await page.evaluate(() => document.querySelectorAll('.mediavote-card').length === 30), 'first page of 30 items rendered (paginated)');
+    check(await page.evaluate(() => document.querySelectorAll('#mediavote-overlay .mediavote-card').length === 30), 'first page of 30 items rendered (paginated)');
     check(await page.evaluate(() => document.getElementById('mediavote-overlay').getAttribute('aria-modal') === 'true'), 'overlay is an aria-modal dialog');
 
     // Vote.
-    await page.click('.mediavote-card [data-action="vote"]');
-    await page.waitForFunction(() => /2 of 3 votes left/.test(document.querySelector('.mediavote-footer').textContent));
+    await page.click('#mediavote-overlay .mediavote-card [data-action="vote"]');
+    await page.waitForFunction(() => /2 of 3 votes left/.test(document.querySelector('#mediavote-overlay .mediavote-footer').textContent));
     check(state.votes.length === 1 && state.votes[0].body.itemId === 'item-0' && state.votes[0].body.kind === 'Remove', 'vote POST sent with item id and kind');
     check(/MediaBrowser Token="tok"/.test(state.votes[0].auth), 'vote request carries the Jellyfin token');
-    check(await page.evaluate(() => !!document.querySelector('.mediavote-card[data-id="item-0"] [data-action="unvote"]')), 'card switches to "undo" after voting');
+    check(await page.evaluate(() => !!document.querySelector('#mediavote-overlay .mediavote-card[data-id="item-0"] [data-action="unvote"]')), 'card switches to "undo" after voting');
 
     // Keyboard guard: a key pressed on our <select> must not reach the Enhanced-style listener.
     const before = await page.evaluate(() => window.__jeFired);
-    await page.focus('.mediavote-toolbar select');
+    await page.focus('#mediavote-overlay .mediavote-toolbar select');
     await page.keyboard.press('k');
     check(await page.evaluate(() => window.__jeFired) === before, 'shortcut listener does not fire for keys inside our UI');
 
@@ -162,7 +178,7 @@ function check(cond, msg) {
 
     // Mount point (Custom Tabs / Plugin Pages).
     await page.evaluate(() => { document.getElementById('tabHost').innerHTML = '<div data-mediavote-mount="tab"></div>'; });
-    await page.waitForSelector('[data-mediavote-mount] .mediavote-card', { timeout: 3000 });
+    await page.waitForSelector('#tabHost [data-mediavote-mount] .mediavote-card', { timeout: 3000 });
     check(true, 'tab/page mount point renders the same voting UI');
     check(errors.length === 0, 'no console errors (desktop): ' + errors.join(' | '));
     await context.close();
@@ -173,8 +189,8 @@ function check(cond, msg) {
     await page.waitForTimeout(800);
     check(await page.evaluate(() => !document.getElementById('mediavote-banner')), 'no banner when no vote is active');
     await page.evaluate(() => { document.getElementById('tabHost').innerHTML = '<div data-mediavote-mount="page"></div>'; });
-    await page.waitForSelector('.mediavote-empty', { timeout: 3000 });
-    check(await page.evaluate(() => /No active vote right now/.test(document.querySelector('.mediavote-empty').textContent) && /Winter clean/.test(document.querySelector('.mediavote-empty').textContent)), '"No active vote" message with last result');
+    await page.waitForSelector('#tabHost .mediavote-empty', { timeout: 3000 });
+    check(await page.evaluate(() => /No active vote right now/.test(document.querySelector('#tabHost .mediavote-empty').textContent) && /Winter clean/.test(document.querySelector('#tabHost .mediavote-empty').textContent)), '"No active vote" message with last result');
     check(errors.length === 0, 'no console errors (phone): ' + errors.join(' | '));
     await context.close();
 
@@ -198,6 +214,61 @@ function check(cond, msg) {
     await page.waitForTimeout(800);
     check(await page.evaluate(() => !document.getElementById('mediavote-banner')), 'ineligible users see no banner');
     await context.close();
+
+
+    // ---------------- 1.0.1.0 safety: preview mode for a non-admin renders nothing and stops
+    Object.assign(state, { active: true, eligible: true, remaining: 3, hidden: true, disabled: false, statusCalls: 0, itemsCalls: 0 });
+    ({ page, errors, context } = await newPage({ width: 1280, height: 800 }));
+    await page.waitForFunction(() => window.MediaVote && window.MediaVote.stopped(), null, { timeout: 5000 });
+    check(await page.evaluate(() => !document.getElementById('mediavote-banner')), 'preview mode (non-admin): no banner');
+    check(await page.evaluate(() => !document.querySelector('[data-mediavote-mounted]') && /Media Vote is loading/.test(document.getElementById('customTabMount').textContent)), 'preview mode (non-admin): mount element left untouched');
+    check(state.itemsCalls === 0, 'preview mode (non-admin): no item list requested');
+    const callsAfterStop = state.statusCalls;
+    await page.evaluate(() => { location.hash = '#/movies'; location.hash = '#/home'; document.getElementById('tabHost').innerHTML = '<div data-mediavote-mount="tab">x</div>'; });
+    await page.waitForTimeout(600);
+    check(state.statusCalls === callsAfterStop && await page.evaluate(() => !document.querySelector('[data-mediavote-mounted]')), 'preview mode (non-admin): no further work after stopping (no requests, no mounting)');
+    check(errors.length === 0, 'no console errors (preview): ' + errors.join(' | '));
+    await context.close();
+
+    // ---------------- kill switch: server says disabled
+    Object.assign(state, { hidden: false, disabled: true, statusCalls: 0, itemsCalls: 0 });
+    ({ page, errors, context } = await newPage({ width: 1280, height: 800 }));
+    await page.waitForFunction(() => window.MediaVote && window.MediaVote.stopped(), null, { timeout: 5000 });
+    check(await page.evaluate(() => !document.getElementById('mediavote-banner') && !document.querySelector('[data-mediavote-mounted]') && !document.getElementById('mediavote-css')), 'disabled: nothing rendered, not even the stylesheet');
+    await context.close();
+
+    // ---------------- client.js missing (404): the page is unaffected
+    Object.assign(state, { disabled: false, clientStatus: 404 });
+    ({ page, errors, context } = await newPage({ width: 1280, height: 800 }));
+    await page.waitForTimeout(800);
+    check(await page.evaluate(() => !!document.getElementById('homeTab') && !window.MediaVote) && errors.filter(e => !/Failed to load resource/.test(e)).length === 0, 'client.js 404: harmless, no script errors');
+    await context.close();
+    state.clientStatus = 0;
+
+    // ---------------- Status keeps failing (HTTP 500): stops after 3 attempts
+    Object.assign(state, { statusError: true, statusCalls: 0 });
+    ({ page, errors, context } = await newPage({ width: 1280, height: 800 }));
+    for (let i = 0; i < 6; i++) { await page.evaluate(() => { location.hash = '#/movies'; location.hash = '#/home'; }); await page.waitForTimeout(150); }
+    await page.waitForFunction(() => window.MediaVote && window.MediaVote.stopped(), null, { timeout: 5000 });
+    const callsAtStop = state.statusCalls;
+    await page.evaluate(() => { location.hash = '#/movies'; location.hash = '#/home'; });
+    await page.waitForTimeout(400);
+    check(callsAtStop <= 4 && state.statusCalls === callsAtStop, 'repeated server errors: script stops itself (' + callsAtStop + ' status calls) and stays quiet');
+    await context.close();
+    state.statusError = false;
+
+    // ---------------- late mount: a Custom Tabs-style element that appears later gets the voting UI
+    Object.assign(state, { active: true, eligible: true, remaining: 3, hidden: false, disabled: false, adminPreview: true });
+    ({ page, errors, context } = await newPage({ width: 1280, height: 800 }));
+    await page.waitForSelector('#customTabMount .mediavote-card', { timeout: 5000 });
+    check(await page.evaluate(() => !/Media Vote is loading/.test(document.getElementById('customTabMount').textContent)), 'mount element in the page at load: fallback text replaced by the voting UI');
+    await page.waitForTimeout(1500);
+    await page.evaluate(() => { const d = document.createElement('div'); d.className = 'tabContent pageTabContent'; d.innerHTML = '<div data-mediavote-mount="tab">Media Vote is loading. If this stays empty, reload the page.</div>'; document.body.appendChild(d); });
+    await page.waitForFunction(() => document.querySelectorAll('[data-mediavote-mounted] .mediavote-card').length > 30, null, { timeout: 5000 });
+    check(true, 'mount element that appears late (after re-render) is filled with the voting UI');
+    check(errors.length === 0, 'no console errors (late mount): ' + errors.join(' | '));
+    await context.close();
+    state.adminPreview = false;
 
     // ---------------- standalone page with its own login
     state.eligible = true; state.active = true;

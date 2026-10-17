@@ -17,9 +17,20 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
         : base(applicationPaths, xmlSerializer)
     {
         Instance = this;
-        if (Configuration.Normalize())
+        Services.KillSwitch.Initialise(System.IO.Path.Combine(applicationPaths.DataPath, "mediavote"));
+        try
         {
-            SaveConfiguration();
+            bool migrated = Configuration.Migrate();
+            if (Configuration.Normalize() | migrated)
+            {
+                SaveConfiguration();
+            }
+        }
+#pragma warning disable CA1031 // a configuration problem must never stop the plugin (or the server) from loading
+        catch (Exception)
+#pragma warning restore CA1031
+        {
+            // The in-memory configuration still has safe defaults; saving is retried when the admin saves settings.
         }
     }
 
@@ -27,6 +38,9 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
     public event EventHandler? ConfigurationSaved;
 
     public static Plugin? Instance { get; private set; }
+
+    /// <summary>Cleanup actions registered at start-up (remove File Transformation / Plugin Pages registrations).</summary>
+    internal static List<Action> UninstallHooks { get; } = new();
 
     public override string Name => "Media Vote";
 
@@ -43,6 +57,29 @@ public class Plugin : BasePlugin<PluginConfiguration>, IHasWebPages
 
         base.UpdateConfiguration(configuration);
         ConfigurationSaved?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>
+    /// Called by Jellyfin before the plugin is removed. Removes what Media Vote registered in memory with other
+    /// plugins. Media Vote never writes other plugins' saved settings, so there is nothing else to undo there.
+    /// Vote data in &lt;data&gt;/mediavote and the plugin's own configuration file are kept (see README).
+    /// </summary>
+    public override void OnUninstalling()
+    {
+        foreach (var hook in UninstallHooks.ToArray())
+        {
+            try
+            {
+                hook();
+            }
+#pragma warning disable CA1031 // uninstall must always complete
+            catch (Exception)
+#pragma warning restore CA1031
+            {
+            }
+        }
+
+        base.OnUninstalling();
     }
 
     public IEnumerable<PluginPageInfo> GetPages()

@@ -2,8 +2,8 @@
 # The GitHub release workflow reads guid/name/overview/description/owner/category/targetAbi from here.
 name: "Media Vote"
 guid: "1ffa7b73-334b-4a42-b6c8-0f7b48457bb8"
-version: "1.0.0.0"
-targetAbi: "10.11.0.0"
+version: "1.0.1.0"
+targetAbi: "10.11.10.0"
 framework: "net9.0"
 overview: "Let your users vote on which movies and shows to remove."
 description: >

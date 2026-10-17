@@ -51,6 +51,7 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
         });
         serviceCollection.AddSingleton<WebInjectionService>();
         serviceCollection.AddSingleton<EntryPointRegistrar>();
+        serviceCollection.AddSingleton<ApiSelfCheck>();
         serviceCollection.AddHostedService<DeadlineService>();
     }
 

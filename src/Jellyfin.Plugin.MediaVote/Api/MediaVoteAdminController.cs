@@ -34,6 +34,12 @@ public sealed class ExtendRequest
     public string DeadlineLocal { get; set; } = string.Empty;
 }
 
+/// <summary>Preview-mode request.</summary>
+public sealed class VisibilityRequest
+{
+    public bool PreviewOnly { get; set; } = true;
+}
+
 /// <summary>Tie-break request.</summary>
 public sealed class TieRequest
 {
@@ -129,6 +135,8 @@ public sealed class MediaVoteAdminController : MediaVoteControllerBase
     private readonly EntryPointRegistrar _registrar;
     private readonly IApplicationPaths _paths;
     private readonly ILibraryManager _library;
+    private readonly ApiSelfCheck _selfCheck;
+    private readonly Microsoft.Extensions.Logging.ILogger<MediaVoteAdminController> _logger;
 
     public MediaVoteAdminController(
         VoteService votes,
@@ -139,8 +147,12 @@ public sealed class MediaVoteAdminController : MediaVoteControllerBase
         WebInjectionService injection,
         EntryPointRegistrar registrar,
         IApplicationPaths paths,
-        ILibraryManager library)
+        ILibraryManager library,
+        ApiSelfCheck selfCheck,
+        Microsoft.Extensions.Logging.ILogger<MediaVoteAdminController> logger)
     {
+        _selfCheck = selfCheck;
+        _logger = logger;
         _paths = paths;
         _library = library;
         _votes = votes;
@@ -189,7 +201,22 @@ public sealed class MediaVoteAdminController : MediaVoteControllerBase
             nowUtc = _votes.Clock.UtcNow,
             nowLocal = LocalText(_votes.Clock.UtcNow, zone),
             defaultDeadlineInput = TimeZoneHelper.UtcToLocal(_votes.Clock.UtcNow, zone).Date.AddDays(7).AddHours(20).ToString("yyyy-MM-ddTHH:mm", CultureInfo.InvariantCulture),
-            customTabHtml = EntryPointRegistrar.TabHtml(),
+            customTabSnippet = CustomTabsInspector.Snippet,
+            customTabFindings = _registrar.CustomTabFindings,
+            killSwitch = new { active = KillSwitch.IsActive, path = KillSwitch.FilePath },
+            previewOnly = Config.AdminPreviewOnly,
+            entryPoints = new
+            {
+                banner = Config.EnableBanner,
+                tab = Config.EnableCustomTab,
+                page = Config.EnablePluginPage,
+                section = Config.EnableHomeSection,
+                standalone = Config.EnableStandalonePage
+            },
+            selfCheck = _selfCheck.Results,
+            selfCheckUtc = _selfCheck.LastRunUtc,
+            pluginVersion = Plugin.Instance?.Version?.ToString(),
+            builtForJellyfin = ErrorText.BuiltForJellyfin,
             timeZone = zone.Id,
             timeZoneFound = !string.Equals(zone.Id, "UTC", StringComparison.Ordinal) || string.Equals(Config.TimeZoneId, "UTC", StringComparison.OrdinalIgnoreCase),
             injection = _injection.Status,
@@ -378,7 +405,7 @@ public sealed class MediaVoteAdminController : MediaVoteControllerBase
             ResultBannerDays = c.ResultBannerDays,
             UsePlaybackReporting = c.UsePlaybackReporting,
             ProtectedItemIds = c.ProtectedItemIds.ToList(),
-            ProtectedItemNames = c.ProtectedItemIds.Distinct().ToDictionary(id => id, id => _library.GetItemById(id)?.Name ?? "(missing) " + id),
+            ProtectedItemNames = c.ProtectedItemIds.Distinct().ToDictionary(id => id, id => ProtectedName(id)),
             ProtectedLibraryIds = c.ProtectedLibraryIds.ToList(),
             RadarrUrl = c.RadarrUrl,
             RadarrApiKey = Mask(c.RadarrApiKey),
@@ -419,11 +446,6 @@ public sealed class MediaVoteAdminController : MediaVoteControllerBase
         if (TimeZoneHelper.Find(d.TimeZoneId).Id == "UTC" && !string.Equals(d.TimeZoneId, "UTC", StringComparison.OrdinalIgnoreCase) && !string.Equals(d.TimeZoneId, "Etc/UTC", StringComparison.OrdinalIgnoreCase))
         {
             errors.Add($"Unknown time zone \"{d.TimeZoneId}\". Use an IANA name such as Europe/London.");
-        }
-
-        if (!d.EnableBanner && !d.EnableCustomTab && !d.EnablePluginPage && !d.EnableStandalonePage)
-        {
-            errors.Add("The banner can only be turned off if the Vote tab, the sidebar page or the standalone page is on.");
         }
 
         if (errors.Count > 0)
@@ -487,15 +509,50 @@ public sealed class MediaVoteAdminController : MediaVoteControllerBase
         }
     }
 
-    [HttpPost("Reinject")]
-    public ActionResult Reinject()
+    /// <summary>Re-applies the entry points (and re-reads Custom Tabs, read-only).</summary>
+    [HttpPost("Reapply")]
+    public ActionResult Reapply()
     {
-        _injection.Run();
-        _registrar.RegisterAll();
-        return Json(new { injection = _injection.Status, integrations = _registrar.Status });
+        StartupTask.ApplyAll(_injection, _registrar, _logger);
+        return Json(new { injection = _injection.Status, integrations = _registrar.Status, customTabFindings = _registrar.CustomTabFindings });
+    }
+
+    /// <summary>Runs the Jellyfin API self-check again.</summary>
+    [HttpPost("SelfCheck")]
+    public ActionResult SelfCheck() => Json(new { selfCheck = _selfCheck.Run(), selfCheckUtc = _selfCheck.LastRunUtc });
+
+    /// <summary>Preview mode on/off ("Go live"). Body: { "previewOnly": false }.</summary>
+    [HttpPost("Visibility")]
+    public async Task<ActionResult> Visibility()
+    {
+        var req = await ReadBodyAsync<VisibilityRequest>().ConfigureAwait(false);
+        if (req is null || Plugin.Instance is null)
+        {
+            return Error(400, "bad_request");
+        }
+
+        var c = Plugin.Instance.Configuration;
+        c.AdminPreviewOnly = req.PreviewOnly;
+        Plugin.Instance.UpdateConfiguration(c);
+        _audit.Write(req.PreviewOnly ? "preview_on" : "went_live", AdminName, null, req.PreviewOnly ? "Preview mode switched on" : "Preview mode switched off (live for all users)");
+        return Json(new { ok = true, previewOnly = c.AdminPreviewOnly });
     }
 
     // ------------------------------------------------------------------ helpers
+
+    private string ProtectedName(Guid id)
+    {
+        try
+        {
+            return _library.GetItemById(id)?.Name ?? "(missing) " + id;
+        }
+#pragma warning disable CA1031 // a name lookup must not break the settings page
+        catch (Exception)
+#pragma warning restore CA1031
+        {
+            return id.ToString();
+        }
+    }
 
     private static string KeepOrReplace(string current, string? incoming)
     {

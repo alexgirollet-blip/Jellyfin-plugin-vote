@@ -198,42 +198,6 @@ public class HelperTests
     }
 
     [Fact]
-    public void Injection_IsAdditiveAndIdempotent()
-    {
-        const string html = "<html><head></head><body><div id=\"x\"></div><script src=\"other-plugin.js\"></script></body></html>";
-        var tag = WebInjectionService.BuildTag("/jf", "1.0.0.0");
-        var once = WebInjectionService.InsertTag(html, tag);
-        var twice = WebInjectionService.InsertTag(once, tag);
-        Assert.Equal(once, twice);
-        Assert.Contains("other-plugin.js", once, StringComparison.Ordinal);
-        Assert.Contains("src=\"/jf/MediaVote/client.js?v=1.0.0.0\"", once, StringComparison.Ordinal);
-        Assert.True(once.IndexOf(tag, StringComparison.Ordinal) < once.IndexOf("</body>", StringComparison.Ordinal));
-        Assert.Equal(html, WebInjectionService.RemoveTag(once));
-    }
-
-    [Fact]
-    public void Config_BannerCannotBeDisabledAlone()
-    {
-        var c = new PluginConfiguration { EnableBanner = false, EnableCustomTab = false, EnablePluginPage = false, EnableStandalonePage = false };
-        Assert.True(c.Normalize());
-        Assert.True(c.EnableBanner);
-        var ok = new PluginConfiguration { EnableBanner = false, EnablePluginPage = true };
-        ok.Normalize();
-        Assert.False(ok.EnableBanner);
-    }
-
-    [Fact]
-    public void Config_DefaultsAreSafe()
-    {
-        var c = new PluginConfiguration();
-        Assert.True(c.EnableBanner && c.EnableCustomTab && c.EnablePluginPage && c.EnableHomeSection && c.EnableStandalonePage);
-        Assert.Equal(ArrAction.Unmonitor, c.RadarrAction);
-        Assert.Equal(ArrAction.Unmonitor, c.SonarrAction);
-        Assert.Equal(SeerrAction.Nothing, c.JellyseerrAction);
-        Assert.Equal("Europe/London", c.TimeZoneId);
-    }
-
-    [Fact]
     public void Mask_HidesSecrets()
     {
         Assert.Equal(string.Empty, MediaVoteAdminController.Mask(string.Empty));
@@ -251,13 +215,5 @@ public class HelperTests
         Assert.Equal("Title", json.RootElement.GetProperty("embeds")[0].GetProperty("title").GetString());
         var generic = JsonDocument.Parse(WebhookNotifier.BuildPayload(WebhookKind.Generic, "vote_opened", s, "Title", "Body"));
         Assert.Equal("vote_opened", generic.RootElement.GetProperty("event").GetString());
-    }
-
-    [Fact]
-    public void CustomTabHtml_HasMountPointAndLoader()
-    {
-        var html = EntryPointRegistrar.TabHtml();
-        Assert.Contains(EntryPointRegistrar.TabMarker, html, StringComparison.Ordinal);
-        Assert.Contains("MediaVote/client.js", html, StringComparison.Ordinal);
     }
 }

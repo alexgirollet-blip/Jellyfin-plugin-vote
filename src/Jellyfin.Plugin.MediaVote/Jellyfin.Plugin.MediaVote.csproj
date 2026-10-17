@@ -12,7 +12,7 @@
 
   <PropertyGroup Condition="'$(JellyfinTarget)' == '10.11'">
     <TargetFramework>net9.0</TargetFramework>
-    <JellyfinPackageVersion>10.11.0</JellyfinPackageVersion>
+    <JellyfinPackageVersion>10.11.10</JellyfinPackageVersion>
     <DefineConstants>$(DefineConstants);JELLYFIN_10_11</DefineConstants>
   </PropertyGroup>
 

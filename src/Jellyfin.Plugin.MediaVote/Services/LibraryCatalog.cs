@@ -52,7 +52,7 @@ public sealed class LibraryCatalog
     public IReadOnlyList<LibraryInfo> GetLibraries()
     {
         var protectedIds = new HashSet<string>(Config.ProtectedLibraryIds, StringComparer.OrdinalIgnoreCase);
-        return _libraryManager.GetVirtualFolders()
+        return JellyfinCall.Run("list libraries", () => _libraryManager.GetVirtualFolders())
             .Where(f => f.CollectionType is null || f.CollectionType is CollectionTypeOptions.movies or CollectionTypeOptions.tvshows or CollectionTypeOptions.homevideos)
             .Select(f => new LibraryInfo(NormalizeId(f.ItemId), f.Name, f.CollectionType?.ToString(), protectedIds.Contains(NormalizeId(f.ItemId))))
             .OrderBy(l => l.Name, StringComparer.OrdinalIgnoreCase)
@@ -90,13 +90,13 @@ public sealed class LibraryCatalog
                 continue;
             }
 
-            var list = _libraryManager.GetItemList(new InternalItemsQuery
+            var list = JellyfinCall.Run("read the items of library " + lib.Name, () => _libraryManager.GetItemList(new InternalItemsQuery
             {
                 IncludeItemTypes = VotableKinds,
                 Recursive = true,
                 IsVirtualItem = false,
                 AncestorIds = new[] { libGuid }
-            });
+            }));
             foreach (var item in list)
             {
                 if (item is Movie or Series)
@@ -111,7 +111,7 @@ public sealed class LibraryCatalog
         var episodeToSeries = new Dictionary<Guid, Guid>();
         if (items.Values.Any(v => v.Item is Series))
         {
-            foreach (var ep in _libraryManager.GetItemList(new InternalItemsQuery { IncludeItemTypes = new[] { BaseItemKind.Episode }, Recursive = true, IsVirtualItem = false }).OfType<Episode>())
+            foreach (var ep in JellyfinCall.Run("read episodes", () => _libraryManager.GetItemList(new InternalItemsQuery { IncludeItemTypes = new[] { BaseItemKind.Episode }, Recursive = true, IsVirtualItem = false })).OfType<Episode>())
             {
                 episodeToSeries[ep.Id] = ep.SeriesId;
                 seriesSize[ep.SeriesId] = seriesSize.GetValueOrDefault(ep.SeriesId) + (ep.Size ?? 0);
@@ -151,14 +151,14 @@ public sealed class LibraryCatalog
             return Array.Empty<CandidateItem>();
         }
 
-        var list = _libraryManager.GetItemList(new InternalItemsQuery
+        var list = JellyfinCall.Run("search the library", () => _libraryManager.GetItemList(new InternalItemsQuery
         {
             IncludeItemTypes = VotableKinds,
             Recursive = true,
             IsVirtualItem = false,
             SearchTerm = term.Trim(),
             Limit = Math.Clamp(limit, 1, 100)
-        });
+        }));
         return list.Where(i => i is Movie or Series).Select(i => new CandidateItem
         {
             ItemId = i.Id,
@@ -180,7 +180,7 @@ public sealed class LibraryCatalog
             return cached.Ids;
         }
 
-        var user = _userManager.GetUserById(userId);
+        var user = JellyfinCall.Run("look up a user", () => _userManager.GetUserById(userId));
         HashSet<Guid> ids;
         if (user is null)
         {
@@ -188,12 +188,12 @@ public sealed class LibraryCatalog
         }
         else
         {
-            ids = _libraryManager.GetItemList(new InternalItemsQuery(user)
+            ids = JellyfinCall.Run("check which titles the user can see", () => _libraryManager.GetItemList(new InternalItemsQuery(user)
             {
                 ItemIds = candidateIds.ToArray(),
                 IncludeItemTypes = VotableKinds,
                 Recursive = true
-            }).Select(i => i.Id).ToHashSet();
+            }).Select(i => i.Id).ToHashSet());
         }
 
         _visibleCache[(sessionId, userId)] = (DateTime.UtcNow, ids);
@@ -245,23 +245,11 @@ public sealed class LibraryCatalog
         }
 
         // Primary source: Jellyfin's own per-user data.
-        foreach (var user in _userManager.Users)
+        foreach (var user in JellyfinCall.Run("list users", () => _userManager.GetUsers().ToList()))
         {
-            var played = _libraryManager.GetItemList(new InternalItemsQuery(user)
+            foreach (var (id, count, last) in PlayedItemsFor(user))
             {
-                IncludeItemTypes = new[] { BaseItemKind.Movie, BaseItemKind.Episode },
-                Recursive = true,
-                IsPlayed = true
-            });
-            foreach (var item in played)
-            {
-                var data = _userDataManager.GetUserData(user, item);
-                if (data is null)
-                {
-                    continue;
-                }
-
-                Add(item.Id, Math.Max(data.PlayCount, data.Played ? 1 : 0), data.LastPlayedDate);
+                Add(id, count, last);
             }
         }
 
@@ -285,6 +273,51 @@ public sealed class LibraryCatalog
         }
 
         return stats;
+    }
+
+    /// <summary>Played movies/episodes of one user with play count and last played date (Jellyfin user data).</summary>
+    private List<(Guid Id, int Count, DateTime? Last)> PlayedItemsFor(Jellyfin.Database.Implementations.Entities.User user)
+        => JellyfinCall.Run("read play statistics for " + user.Username, () =>
+        {
+            var result = new List<(Guid, int, DateTime?)>();
+            var played = _libraryManager.GetItemList(new InternalItemsQuery(user)
+            {
+                IncludeItemTypes = new[] { BaseItemKind.Movie, BaseItemKind.Episode },
+                Recursive = true,
+                IsPlayed = true
+            });
+            foreach (var item in played)
+            {
+                var data = _userDataManager.GetUserData(user, item);
+                if (data is not null)
+                {
+                    result.Add((item.Id, Math.Max(data.PlayCount, data.Played ? 1 : 0), data.LastPlayedDate));
+                }
+            }
+
+            return result;
+        });
+
+    /// <summary>Self-check: reads a few votable titles (does not compute sizes or stats).</summary>
+    public int SampleScope(int limit)
+        => JellyfinCall.Run("read library items", () => _libraryManager.GetItemList(new InternalItemsQuery
+        {
+            IncludeItemTypes = VotableKinds,
+            Recursive = true,
+            IsVirtualItem = false,
+            Limit = limit
+        }).Count(i => i is Movie or Series));
+
+    /// <summary>Self-check: reads play statistics for the first user only.</summary>
+    public (string User, int Played) SamplePlayStats()
+    {
+        var user = JellyfinCall.Run("list users", () => _userManager.GetUsers().FirstOrDefault());
+        if (user is null)
+        {
+            return ("(no users)", 0);
+        }
+
+        return (user.Username, PlayedItemsFor(user).Count);
     }
 
     private static DateTime? Max(DateTime? a, DateTime? b)
