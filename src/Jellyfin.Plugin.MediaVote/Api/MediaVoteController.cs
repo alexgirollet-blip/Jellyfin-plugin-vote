@@ -235,8 +235,9 @@ public sealed class MediaVoteController : MediaVoteControllerBase
 
     internal static string PublicStatus(ItemOutcomeStatus status, OutcomeMode outcome) => status switch
     {
-        ItemOutcomeStatus.Deleted => "removed",
+        ItemOutcomeStatus.Removed or ItemOutcomeStatus.Deleted => "removed",
         ItemOutcomeStatus.Reported when outcome == OutcomeMode.NotifyOnly => "flagged",
+        ItemOutcomeStatus.Protected => "kept",
         ItemOutcomeStatus.TiedAwaitingAdmin => "tied",
         ItemOutcomeStatus.Reported => "kept",
         _ => "pending"

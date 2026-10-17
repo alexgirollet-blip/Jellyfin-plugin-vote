@@ -37,6 +37,7 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
             sp.GetRequiredService<System.Net.Http.IHttpClientFactory>(),
             CurrentConfig,
             sp.GetRequiredService<ILoggerFactory>().CreateLogger("MediaVote.Webhook")));
+        serviceCollection.AddSingleton<ArrLibraryCache>();
         serviceCollection.AddSingleton(sp =>
         {
             var factory = sp.GetRequiredService<ExternalServiceFactory>();
@@ -44,10 +45,11 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
                 sp.GetRequiredService<JsonVoteStore>(),
                 sp.GetRequiredService<JellyfinUserDirectory>(),
                 sp.GetRequiredService<JellyfinMediaGateway>(),
-                factory.Create,
+                readOnly => factory.Create(readOnly),
                 sp.GetRequiredService<WebhookNotifier>(),
                 sp.GetRequiredService<FileAuditLog>(),
-                sp.GetRequiredService<IClock>());
+                sp.GetRequiredService<IClock>(),
+                () => KillSwitch.IsActive);
         });
         serviceCollection.AddSingleton<WebInjectionService>();
         serviceCollection.AddSingleton<EntryPointRegistrar>();

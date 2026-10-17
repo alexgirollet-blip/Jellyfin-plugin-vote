@@ -1,19 +1,30 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
+using Jellyfin.Plugin.MediaVote.Core;
 using MediaBrowser.Model.Plugins;
 
 namespace Jellyfin.Plugin.MediaVote.Configuration;
 
-/// <summary>Action for Radarr / Sonarr when a winning item is deleted.</summary>
-public enum ArrAction
+/// <summary>One Radarr, Sonarr or Jellyseerr server. Several of each are allowed (for example a separate Anime Sonarr).</summary>
+public class ArrInstanceConfig
 {
-    /// <summary>Set the movie/series to unmonitored so it is not downloaded again (default).</summary>
-    Unmonitor = 0,
+    /// <summary>Stable id used by the admin page to keep the masked key when editing.</summary>
+    public string Id { get; set; } = Guid.NewGuid().ToString("N");
 
-    /// <summary>Remove from the app and add an import (list) exclusion. Files are NOT deleted by the app; Jellyfin deletes them.</summary>
-    RemoveAndExclude = 1,
+    public ArrKind Kind { get; set; } = ArrKind.Sonarr;
 
-    /// <summary>Do nothing in this app.</summary>
-    Nothing = 2
+    /// <summary>Friendly name shown in results, for example "Sonarr Anime".</summary>
+    public string Name { get; set; } = string.Empty;
+
+    public string Url { get; set; } = string.Empty;
+
+    /// <summary>API key: stored only here, never logged, sent to the browser masked.</summary>
+    public string ApiKey { get; set; } = string.Empty;
+
+    public bool Enabled { get; set; } = true;
+
+    public string DisplayName => string.IsNullOrWhiteSpace(Name) ? Kind.ToString() : Name.Trim();
 }
 
 /// <summary>Action for Jellyseerr when a winning item is deleted.</summary>
@@ -40,7 +51,7 @@ public enum WebhookKind
 public class PluginConfiguration : BasePluginConfiguration
 {
     /// <summary>Current configuration schema version. See <see cref="Migrate"/>.</summary>
-    public const int CurrentConfigVersion = 2;
+    public const int CurrentConfigVersion = 3;
 
     /// <summary>Schema version of this saved configuration (0 = written by 1.0.0.0 or new).</summary>
     public int ConfigVersion { get; set; }
@@ -90,29 +101,48 @@ public class PluginConfiguration : BasePluginConfiguration
     /// <summary>Libraries (collection folder ids) whose items can never be voted on or deleted by a vote.</summary>
     public string[] ProtectedLibraryIds { get; set; } = Array.Empty<string>();
 
-    // ---------------- Radarr ----------------
+    // ---------------- Sonarr / Radarr / Jellyseerr ----------------
 
-    public string RadarrUrl { get; set; } = string.Empty;
+    /// <summary>
+    /// Every configured Radarr, Sonarr and Jellyseerr server. Media Vote never deletes media files itself: with
+    /// "Delete via Sonarr/Radarr" it asks the instance that manages a title to delete it (deleteFiles=true).
+    /// </summary>
+    public ArrInstanceConfig[] ArrInstances { get; set; } = Array.Empty<ArrInstanceConfig>();
 
-    public string RadarrApiKey { get; set; } = string.Empty;
+    /// <summary>Radarr: add an import exclusion when deleting, so lists do not add the movie again (default on).</summary>
+    public bool RadarrAddImportExclusion { get; set; } = true;
 
-    public ArrAction RadarrAction { get; set; } = ArrAction.Unmonitor;
-
-    // ---------------- Sonarr ----------------
-
-    public string SonarrUrl { get; set; } = string.Empty;
-
-    public string SonarrApiKey { get; set; } = string.Empty;
-
-    public ArrAction SonarrAction { get; set; } = ArrAction.Unmonitor;
-
-    // ---------------- Jellyseerr ----------------
-
-    public string JellyseerrUrl { get; set; } = string.Empty;
-
-    public string JellyseerrApiKey { get; set; } = string.Empty;
+    /// <summary>Sonarr: add an import list exclusion when deleting, so lists do not add the series again (default on).</summary>
+    public bool SonarrAddImportListExclusion { get; set; } = true;
 
     public SeerrAction JellyseerrAction { get; set; } = SeerrAction.Nothing;
+
+    /// <summary>Most titles one vote may remove through Sonarr/Radarr (safety cap, 1–100).</summary>
+    public int MaxRemovalsPerVote { get; set; } = 5;
+
+    /// <summary>1.0.x single-instance fields, read only to migrate them into <see cref="ArrInstances"/>, then cleared.</summary>
+    public string RadarrUrl { get; set; } = string.Empty;
+
+    /// <summary>1.0.x, migrated.</summary>
+    public string RadarrApiKey { get; set; } = string.Empty;
+
+    /// <summary>1.0.x, migrated.</summary>
+    public string SonarrUrl { get; set; } = string.Empty;
+
+    /// <summary>1.0.x, migrated.</summary>
+    public string SonarrApiKey { get; set; } = string.Empty;
+
+    /// <summary>1.0.x, migrated.</summary>
+    public string JellyseerrUrl { get; set; } = string.Empty;
+
+    /// <summary>1.0.x, migrated.</summary>
+    public string JellyseerrApiKey { get; set; } = string.Empty;
+
+    /// <summary>Enabled instances of one kind with a URL and key.</summary>
+    public IReadOnlyList<ArrInstanceConfig> InstancesOf(ArrKind kind)
+        => (ArrInstances ?? Array.Empty<ArrInstanceConfig>())
+            .Where(i => i is not null && i.Kind == kind && i.Enabled && !string.IsNullOrWhiteSpace(i.Url) && !string.IsNullOrWhiteSpace(i.ApiKey))
+            .ToList();
 
     // ---------------- webhook ----------------
 
@@ -142,11 +172,34 @@ public class PluginConfiguration : BasePluginConfiguration
             return false;
         }
 
-        EnableBanner = false;
-        EnableCustomTab = false;
-        EnablePluginPage = false;
-        EnableHomeSection = false;
-        AdminPreviewOnly = true;
+        if (ConfigVersion < 2)
+        {
+            EnableBanner = false;
+            EnableCustomTab = false;
+            EnablePluginPage = false;
+            EnableHomeSection = false;
+            AdminPreviewOnly = true;
+        }
+
+        if (ConfigVersion < 3)
+        {
+            // 1.0.x had one URL/key per app; keep them as the first instance of each kind.
+            var list = (ArrInstances ?? Array.Empty<ArrInstanceConfig>()).ToList();
+            void Move(ArrKind kind, string url, string key)
+            {
+                if (!string.IsNullOrWhiteSpace(url) && !list.Any(i => i.Kind == kind && string.Equals(i.Url, url, StringComparison.OrdinalIgnoreCase)))
+                {
+                    list.Add(new ArrInstanceConfig { Kind = kind, Name = kind.ToString(), Url = url.Trim(), ApiKey = key?.Trim() ?? string.Empty });
+                }
+            }
+
+            Move(ArrKind.Radarr, RadarrUrl, RadarrApiKey);
+            Move(ArrKind.Sonarr, SonarrUrl, SonarrApiKey);
+            Move(ArrKind.Jellyseerr, JellyseerrUrl, JellyseerrApiKey);
+            ArrInstances = list.ToArray();
+            RadarrUrl = RadarrApiKey = SonarrUrl = SonarrApiKey = JellyseerrUrl = JellyseerrApiKey = string.Empty;
+        }
+
         ConfigVersion = CurrentConfigVersion;
         return true;
     }
@@ -172,6 +225,8 @@ public class PluginConfiguration : BasePluginConfiguration
         ResultBannerDays = Math.Clamp(ResultBannerDays, 0, 365);
         ProtectedItemIds ??= Array.Empty<Guid>();
         ProtectedLibraryIds ??= Array.Empty<string>();
+        ArrInstances = (ArrInstances ?? Array.Empty<ArrInstanceConfig>()).Where(i => i is not null).ToArray();
+        MaxRemovalsPerVote = Math.Clamp(MaxRemovalsPerVote, 1, 100);
         return changed;
     }
 }

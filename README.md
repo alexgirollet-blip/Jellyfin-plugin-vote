@@ -2,20 +2,21 @@
 
 Let your users vote on which movies and shows to remove from your Jellyfin server.
 
-An administrator starts a vote for selected users. Users vote from a banner on their home page, a **Vote** tab, a **Vote** sidebar page or a standalone page. When the deadline passes, the top **N** titles are either **reported to the admin** (the default) or **deleted automatically**: from Jellyfin, from disk, and with the matching Radarr/Sonarr/Jellyseerr entries handled so nothing is downloaded again.
+An administrator starts a vote for selected users. Users vote from a banner on their home page, a **Vote** tab, a **Vote** sidebar page or a standalone page. When the deadline passes, the top **N** titles are either **reported to the admin** (the default) or **deleted through Sonarr and Radarr**: the Sonarr (series) or Radarr (movies) instance that manages each winning title deletes it with its files, and Jellyfin then forgets it. **Media Vote itself never deletes, moves or changes a media file.**
 
 > ## ⚠️ Read this first
 >
-> - **Version 1.0.1.0 requires Jellyfin 10.11.10.** It is built against the 10.11.10 packages with `targetAbi 10.11.10.0`. Jellyfin changes plugin APIs even inside 10.11.x, so a build only works on the Jellyfin version it was built for. See [Jellyfin version requirement](#jellyfin-version-requirement).
-> - **1.0.0.0 was withdrawn.** It broke servers: user lists failed with HTTP 500, and its Vote tab in Custom Tabs blanked the home page. It has been removed from the plugin repository. **If you installed it, do [Upgrading from 1.0.0.0](#upgrading-from-1000) first.**
-> - **Safety comes first in 1.0.1.0.** After install, nothing is visible to your users. Every optional entry point is **off**, and **preview mode** shows Media Vote to administrators only until you press **Go live**. A [`DISABLE` file](#emergency-recovery-zimaos--docker) switches everything off instantly.
+> - **1.0.2.0: deletion only through Sonarr/Radarr.** Jellyfin cannot write to exFAT media drives, so Media Vote no longer deletes anything itself; "Delete automatically" became **"Delete via Sonarr/Radarr"**. See [Why deletion goes only through Sonarr/Radarr](#why-deletion-goes-only-through-sonarrradarr-exfat). It also fixes the vote-results banner coming back after you close it.
+> - **Media Vote requires Jellyfin 10.11.10.** It is built against the 10.11.10 packages with `targetAbi 10.11.10.0`. Jellyfin changes plugin APIs even inside 10.11.x, so a build only works on the Jellyfin version it was built for. See [Jellyfin version requirement](#jellyfin-version-requirement).
+> - **1.0.0.0 was withdrawn.** It broke servers: user lists failed with HTTP 500, and its Vote tab in Custom Tabs blanked the home page. It has been removed from the plugin repository. **If you installed it, do [Upgrading from 1.0.0.0](#upgrading-from-1000-or-1010) first.**
+> - **Safety comes first.** After install, nothing is visible to your users. Every optional entry point is **off**, and **preview mode** shows Media Vote to administrators only until you press **Go live**. A [`DISABLE` file](#emergency-recovery-zimaos--docker) switches everything off instantly.
 
 ---
 
 ## Contents
 
 1. [Jellyfin version requirement](#jellyfin-version-requirement)
-2. [Upgrading from 1.0.0.0](#upgrading-from-1000)
+2. [Upgrading from 1.0.0.0 or 1.0.1.0](#upgrading-from-1000-or-1010)
 3. [Install on a fresh server](#install-on-a-fresh-server)
 4. [Safe test procedure (do this before going live)](#safe-test-procedure-do-this-before-going-live)
 5. [Emergency recovery (ZimaOS / Docker)](#emergency-recovery-zimaos--docker)
@@ -27,7 +28,7 @@ An administrator starts a vote for selected users. Users vote from a banner on t
 11. [Vote rules](#vote-rules)
 12. [Resolution and deletion safety](#resolution-and-deletion-safety)
 13. [Radarr, Sonarr and Jellyseerr](#radarr-sonarr-and-jellyseerr)
-14. [Docker / ZimaOS permission notes](#docker--zimaos-permission-notes)
+14. [Why deletion goes only through Sonarr/Radarr (exFAT)](#why-deletion-goes-only-through-sonarrradarr-exfat)
 15. [Supported and unsupported clients](#supported-and-unsupported-clients)
 16. [Compatibility with other plugins](#compatibility-with-other-plugins)
 17. [Extra features: implemented and skipped](#extra-features-implemented-and-skipped)
@@ -44,7 +45,8 @@ An administrator starts a vote for selected users. Users vote from a banner on t
 
 | Media Vote | Built against `Jellyfin.Controller` / `Jellyfin.Model` | `targetAbi` | Runs on |
 |---|---|---|---|
-| **1.0.1.0** | **10.11.10** | **10.11.10.0** | Jellyfin **10.11.10**. CI also confirms the DLL binds against 10.11.11; Jellyfin itself refuses it on anything older than 10.11.10. |
+| **1.0.2.0** | **10.11.10** | **10.11.10.0** | Jellyfin **10.11.10**. CI also checks the DLL against the newest 10.11.x (non-blocking); Jellyfin itself refuses it on anything older than 10.11.10. |
+| 1.0.1.0 | 10.11.10 | 10.11.10.0 | Jellyfin 10.11.10. |
 | 1.0.0.0 (withdrawn) | 10.11.0 | 10.11.0.0 | Broken on 10.11.10 (see below). |
 
 **Why a build is tied to one Jellyfin version.** A Jellyfin plugin is a .NET DLL that calls Jellyfin's internal classes directly, and Jellyfin does not keep those APIs stable between patch releases. Between 10.11.0 and 10.11.10, ten public members were removed, among them `IUserManager.Users`, which became `IUserManager.GetUsers()`. Media Vote 1.0.0.0 was compiled against 10.11.0, so on a 10.11.10 server .NET threw:
@@ -75,13 +77,18 @@ That error happened on every page that lists users and when creating a vote.
 
 ---
 
-## Upgrading from 1.0.0.0
+## Upgrading from 1.0.0.0 or 1.0.1.0
 
-1.0.0.0 wrote a "Vote" tab into **Custom Tabs' own saved settings**. That tab blanks the home screen, even after Media Vote is uninstalled; [why](#the-vote-tab-custom-tabs-manual-setup-and-why). 1.0.1.0 never touches Custom Tabs, so you remove the tab yourself.
+**From 1.0.1.0:** just update in *Dashboard → Plugins* and restart. Your entry points, preview state and votes are kept.
+- Your single Radarr / Sonarr / Jellyseerr URL and key move into the new **instance list** (*Settings → Sonarr, Radarr and Jellyseerr*). The old copies of the keys are removed from the settings file.
+- The old Radarr/Sonarr *action* setting (Unmonitor / Remove + exclusion) is gone: Sonarr/Radarr now delete the title and its files themselves.
+- Old votes and results still open; a 1.0.x "Delete automatically" vote is treated as "Delete via Sonarr/Radarr", and its *Retry* now goes through Sonarr/Radarr.
+
+**From 1.0.0.0:** 1.0.0.0 wrote a "Vote" tab into **Custom Tabs' own saved settings**. That tab blanks the home screen, even after Media Vote is uninstalled; [why](#the-vote-tab-custom-tabs-manual-setup-and-why). Media Vote never touches Custom Tabs any more, so you remove the tab yourself.
 
 1. **Remove the leftover Vote tab.** Go to **Dashboard → Plugins → Custom Tabs**. Delete the tab whose content starts with `<div data-mediavote-mount="tab" class="mediavote-tab-host"></div><script>`, usually titled "Vote", then **Save**. If the dashboard itself is unusable, see [Emergency recovery](#emergency-recovery-zimaos--docker), step 3.
-2. Install 1.0.1.0 as below. Your existing votes are kept: they live in `/config/data/mediavote`.
-3. On first start, 1.0.1.0 **resets** the settings 1.0.0.0 saved: every optional entry point goes off and preview mode goes on. Your Radarr/Sonarr/Jellyseerr settings, protected items and votes are kept.
+2. Install the current version as below. Your existing votes are kept: they live in `/config/data/mediavote`.
+3. On first start, the settings 1.0.0.0 saved are **reset**: every optional entry point goes off and preview mode goes on. Your Radarr/Sonarr/Jellyseerr connections, protected items and votes are kept.
 4. Open *Status & setup*. A "Custom Tabs check" warning stays there as long as the old tab exists.
 
 ---
@@ -94,7 +101,7 @@ That error happened on every page that lists users and when creating a vote.
 https://raw.githubusercontent.com/alexgirollet-blip/Jellyfin-plugin-vote/main/manifest.json
 ```
 
-> The manifest lists no installable version until 1.0.1.0 has been released (merge this PR, then push the tag; see [Publishing a release](#publishing-a-release)). 1.0.0.0 has been removed from it.
+> The manifest lists 1.0.1.0 now and 1.0.2.0 once it has been released (see [Publishing a release](#publishing-a-release)). The broken 1.0.0.0 has been removed from it.
 
 1. Make sure Jellyfin is **10.11.10** (*Dashboard → General*, or check that other plugins show 10.11.10.0).
 2. **Dashboard → Plugins → Repositories → +**: name `Media Vote`, the URL above → **Save**.
@@ -138,7 +145,11 @@ Follow the steps in order and stop at the first problem. If anything ever looks 
    - **Current leaders row (Home Screen Sections):** also enable it in HSS's own settings.
 7. **Go live:** *Status & setup → Go live* → confirm. Your users now see the enabled entry points. Ask them to close and reopen the app.
 8. **Only after going live**, add the Vote tab by hand if you want it; see [The Vote tab](#the-vote-tab-custom-tabs-manual-setup-and-why).
-9. Before your first **Delete automatically** vote, run **Dry run** on it and check the paths, sizes and permission messages.
+9. **Connect Sonarr and Radarr** (*Settings → Sonarr, Radarr and Jellyseerr*): add each instance (for example *Sonarr*, *Sonarr Anime*, *Radarr*), press **Test connection** on each, save, then check the read-only card on *Status & setup* (version, root folders, free space).
+10. Before your first **Delete via Sonarr/Radarr** vote:
+    1. Make a vote with only **one small, harmless title** you are happy to lose, *Delete via Sonarr/Radarr*, N = 1.
+    2. Press **Dry run**: it lists exactly which Sonarr/Radarr entry would be deleted and how many GB, using read-only requests only.
+    3. Close the vote and check the title disappears from Sonarr/Radarr, from the drive and, a minute later, from Jellyfin. See [Manual test checklist](#manual-test-checklist).
 
 ---
 
@@ -154,14 +165,14 @@ Use these from the ZimaOS host shell (SSH, or the ZimaOS terminal). The containe
    - nothing is injected into the web client and no entry point is registered;
    - the served `client.js` is an empty script, so even a cached page does nothing;
    - users see nothing, and voting calls are refused;
-   - **vote resolution and any deletion are paused**.
+   - **vote resolution and any request to Sonarr/Radarr are paused** (Retry is refused too).
 
    The admin page keeps working. To re-enable, run `rm /DATA/AppData/jellyfin/config/data/mediavote/DISABLE` and restart. Inside the container, the file is `/config/data/mediavote/DISABLE`.
 2. **Remove the plugin completely, even if Jellyfin's dashboard doesn't load:**
    ```sh
    docker stop jellyfin            # or stop the app in ZimaOS
    ls /DATA/AppData/jellyfin/config/data/plugins/        # find "Media Vote_1.0.x.x"
-   rm -rf "/DATA/AppData/jellyfin/config/data/plugins/Media Vote_1.0.1.0"
+   rm -rf "/DATA/AppData/jellyfin/config/data/plugins/Media Vote_1.0.2.0"
    docker start jellyfin
    ```
    Use the folder name you actually see; the container name may differ in ZimaOS. Optional extras:
@@ -183,7 +194,7 @@ Use these from the ZimaOS host shell (SSH, or the ZimaOS terminal). The containe
 
 ## What Media Vote writes, and how to undo it
 
-1.0.1.0 writes **nothing** into Jellyfin's web files and **never** changes another plugin's saved settings. A unit test fails the build if code that could write another plugin's configuration is added back.
+Media Vote writes **nothing** into Jellyfin's web files, **never** changes another plugin's saved settings, and **never deletes, moves or changes a media file**. Unit tests fail the build if code that could write another plugin's configuration, or delete or move a file outside Media Vote's own data folder, is added back.
 
 | What | Where | Undo |
 |---|---|---|
@@ -193,12 +204,13 @@ Use these from the ZimaOS host shell (SSH, or the ZimaOS terminal). The containe
 | Plugin Pages sidebar entry | **In memory only** (`RegisterPage`), only while that entry point is on | Removed automatically when turned off or on uninstall (`OnUninstalling` calls `RemovePage`). |
 | Home Screen Sections row | **In memory only** (`RegisterSection`). HSS has no removal API, so the row returns nothing when off. | Disappears after a Jellyfin restart. |
 | Custom Tabs | **Nothing.** You add and remove the Vote tab yourself. | Delete the tab in Custom Tabs. |
-| Media files, Radarr/Sonarr/Jellyseerr entries | Only when a **Delete automatically** vote resolves (never in Notify only or Dry run) | Not undoable: that is the purpose of the feature. Use Notify only first. |
-| Permission probe file | Only on **Windows** servers: a temporary `.mediavote-probe-*` file created and deleted in a media folder during the write check. On Linux, `access(2)` is used and nothing is written. | — |
+| Sonarr / Radarr / Jellyseerr | Only when a **Delete via Sonarr/Radarr** vote resolves (or you press Retry): Jellyseerr media record (if configured), then Sonarr/Radarr `DELETE …?deleteFiles=true` with the import (list) exclusion you chose. **Never** in Notify only, Dry run, Preview or the Status tab: those use read-only clients that cannot send anything but GET. | Not undoable: that is the purpose of the feature. Re-add the title in Sonarr/Radarr (remove the exclusion first) to get it back. |
+| Jellyfin's own entry for a removed title | Only after Sonarr/Radarr removed it **and its files are gone from disk**: `ILibraryManager.DeleteItem(item, DeleteFileLocation = false)` drops Jellyfin's database rows and cached images/metadata for that title, exactly what a library scan does for a folder that disappeared. Until then, Media Vote only asks Jellyfin to refresh that library. | Nothing to undo: the files were already gone. |
+| Media files | **Never.** | — |
 
 On uninstall, Jellyfin calls the plugin's `OnUninstalling()`. Media Vote then removes its File Transformation registration (`RemoveTransformation`) and its Plugin Pages entry (`RemovePage`). Votes and settings are kept, in case you reinstall. Delete them as shown above if you don't want them.
 
-*1.0.0.0 only:* if File Transformation was missing, 1.0.0.0 could add a `data-mediavote-script` tag to the web client's `index.html` and keep a backup `index.html.mediavote-backup`. 1.0.1.0 detects such a leftover tag and tells you on the Status tab. In the linuxserver image that file isn't writable, so it is very unlikely you have it.
+*1.0.0.0 only:* if File Transformation was missing, 1.0.0.0 could add a `data-mediavote-script` tag to the web client's `index.html` and keep a backup `index.html.mediavote-backup`. Current versions detect such a leftover tag and tell you on the Status tab. In the linuxserver image that file isn't writable, so it is very unlikely you have it.
 
 ---
 
@@ -231,8 +243,6 @@ These placement rules were checked against each plugin's current source:
 - A debounced `MutationObserver`, `hashchange`/`popstate`, and jellyfin-web's `viewshow` event re-check placement after every navigation and every home re-render. The banner has a fixed id, so it is **never inserted twice**. If another script inserts something above it, the banner moves back to the top, but at most 5 times per page view, so it never gets into a tug-of-war with another plugin.
 - It is removed when you leave the home page, when no vote is active, and when the user is not eligible.
 - The DOM lookup sits behind a small *host adapter* list. A Jellyfin 12 / MUI adapter can be added there later without touching anything else.
-
----
 
 ---
 
@@ -290,9 +300,12 @@ Open **Dashboard → Plugins → Media Vote**. The page also works on a phone.
 | Tie policy | Default: act on **none** of the tied titles and let the admin break the tie. Alternative: act on all tied titles, which may exceed N. |
 | Voter names / live tallies | Both **shown by default**. Admins always see names. When live tallies are hidden, counts and names are hidden from voters until the vote closes. |
 | Minimum turnout | Optional percentage of eligible voters who must vote, otherwise nothing is acted on. |
-| **Outcome** | **Notify only** (default): a report with names, library paths, sizes and matching Radarr/Sonarr/Jellyseerr entries; nothing is deleted. **Delete automatically**: winners are deleted from Jellyfin and disk. Choosing it requires an explicit confirmation checkbox, and the server rejects it otherwise. |
+| **Outcome** | **Notify only** (default): a report with names, sizes and the matching Sonarr/Radarr entries; nothing is removed anywhere. **Delete via Sonarr/Radarr**: Sonarr (series) or Radarr (movies) deletes each winner with its files. It requires an explicit confirmation checkbox (the server rejects it otherwise), N may not exceed *Most titles one vote may remove* (Settings, default 5), and every Sonarr/Radarr instance must be reachable when the vote is created. |
+| Titles Sonarr/Radarr don't manage | For a *Delete via Sonarr/Radarr* vote they are **left out by default** (they could not be removed automatically). Tick *Also let people vote on titles Sonarr/Radarr do not manage* to include them; if one wins it is listed for you to remove by hand. |
 
-Use **Preview** to see how many titles match, their total size, and the **most disk space that could be freed** (the N largest). The exact figure depends on the winners; see it with **Dry run**.
+Use **Preview** to see how many titles match, their total size, the **most disk space that could be freed** (the N largest), and which titles are **not removable automatically** (badge, plus a *removable only* filter). The hand-picked title search shows the same badge. The exact figure depends on the winners; see it with **Dry run**.
+
+Which titles Sonarr/Radarr manage is worked out with read-only requests when the list is built: by **provider ids first** (TMDb and IMDb for movies; TVDB, TMDb and IMDb for series), and only when Jellyfin has none of those ids, by **title + year + folder name** together. Anything that could be more than one entry (for example the same series in two Sonarr instances) counts as **not matched**.
 
 Only **one vote can be open at a time**. The list of votable titles is frozen when the vote is created.
 
@@ -301,11 +314,11 @@ Only **one vote can be open at a time**. The list of votable titles is frozen wh
 ### Manage votes (*Votes* tab)
 
 - **Extend:** set a new deadline. **Close now:** resolve immediately. **Cancel:** nothing is deleted, and the votes stay in history. Each of these asks for an in-page confirmation.
-- **Dry run:** shows exactly what would be deleted, with paths, sizes and write-permission problems, and which Radarr/Sonarr/Jellyseerr actions would run. It changes nothing, and only read-only GET requests are made.
+- **Dry run:** shows exactly which Sonarr/Radarr entry (instance and id) each winner would be, how many GB Sonarr/Radarr would free in total, which winners you would have to remove by hand, and the Jellyseerr step. It changes nothing: it uses a read-only client that can only send GET requests.
 - **Details:** the ranking with every voter's name, every vote with its time, who has not voted yet, the result, and the external steps for each title.
 - **Tie-break:** pick up to the free number of slots among the tied titles. Unchosen tied titles are kept.
 - **Resolve anyway:** acts on the winners although minimum turnout was not met.
-- **Retry failed items:** retries titles skipped because an external step failed, a deletion failed, a pre-flight check failed, or they were never attempted.
+- **Retry titles not removed:** for *Delete via Sonarr/Radarr* votes, retries titles that were not matched, hit an unreachable instance, were refused, could not be verified, failed the Jellyseerr step, or were never attempted. Every title is looked up again first, so nothing is ever deleted twice.
 - **CSV:** downloads the ranking and outcome. It is formula-injection safe and opens cleanly in Excel or Numbers. Downloads may not work inside the iOS app; use a browser.
 - **History** lists every vote. The **Audit log** tab lists every vote cast, moved or withdrawn, every admin action, and every deletion and external step, newest first. It is stored in `/config/data/mediavote/audit.jsonl`, rotated at 5 MB.
 
@@ -314,8 +327,8 @@ Only **one vote can be open at a time**. The list of votable titles is frozen wh
 - **Entry points:** turn them on one at a time; see [Safe test procedure](#safe-test-procedure-do-this-before-going-live).
 - **Vote tab card:** the exact snippet, a Copy button and step-by-step instructions.
 - **General:** time zone (default `Europe/London`), closing-soon reminder (default 24 h), result banner days (default 7), and Playback Reporting data (on, used only if that plugin is installed).
-- **Protected libraries and titles:** these are never votable and never deleted. Protection is re-checked right before any deletion.
-- **Radarr / Sonarr / Jellyseerr:** see below.
+- **Protected libraries and titles:** these are never votable and never removed. Protection is re-checked right before anything is sent to Sonarr/Radarr.
+- **Sonarr, Radarr and Jellyseerr:** a list of instances (add as many as you have, for example a separate Anime Sonarr), each with name, URL, masked API key, *Use this instance* and **Test connection**; the import (list) exclusion options; the Jellyseerr step; and **Most titles one vote may remove** (1–100, default 5). See [below](#radarr-sonarr-and-jellyseerr).
 - **Webhook:** Discord or generic JSON. The URL is stored masked.
 
 ### Status & setup tab
@@ -323,7 +336,8 @@ Only **one vote can be open at a time**. The list of votable titles is frozen wh
 - the "Disabled by file" banner when `DISABLE` exists;
 - preview state and the **Go live** / **Back to preview** buttons;
 - the state of every entry point;
-- the **Jellyfin API self-check** (with "Run again");
+- the **Jellyfin API self-check** (with "Run again"), including a "Media folders (information only)" line: if Jellyfin cannot write to your media folders it says so and that this is **expected and fine**;
+- a read-only **Sonarr, Radarr and Jellyseerr** card: reachable or not, version, root folders with free space (and total size where Sonarr/Radarr report it), with *Check again*;
 - the File Transformation registration state;
 - the read-only **Custom Tabs check** (1.0.0.0 leftover tab, and tabs that would break the home page);
 - detected optional plugins, the server time zone, the process user, the data folder and the kill-switch path.
@@ -336,11 +350,10 @@ Only **one vote can be open at a time**. The list of votable titles is frozen wh
 2. Tap the banner, or open the **Vote** tab or the **Vote** sidebar page.
 3. Browse every votable title with its poster, title, year, type, size, library, date added, last played and play count. **Search**, filter by **type** or **genre**, **sort** by title, year, size, votes, date added, last played or play count, or show only **My votes**.
 4. Tap **Vote to remove**. Your remaining votes are shown at the top and bottom. Tap **Voted ✓ · undo** to take a vote back. If you have no votes left and tap another title, you are offered to **move** one of your votes to it.
-5. You can change your votes until the deadline. After the vote closes, a result banner lists what was removed or flagged; you can dismiss it.
+5. You can change your votes until the deadline. After the vote closes, a result banner lists what was removed or flagged. Close it with **✕** and it stays closed (fixed in 1.0.2.0; in 1.0.1.0 it came straight back).
+6. In a *Delete via Sonarr/Radarr* vote that includes titles Sonarr/Radarr don't manage, those show a **"Not removable automatically"** badge.
 
 Your votes are **not anonymous**: your name and the time of each vote are stored. Admins always see who voted for what, and other participants see names too unless the admin turned that off.
-
----
 
 ---
 
@@ -370,88 +383,67 @@ If the server cannot find the time zone, the *Status & setup* tab warns and UTC 
 
 ---
 
----
-
 ## Resolution and deletion safety
+
+Media Vote **never deletes, moves or changes a media file**. Titles are removed only by the Sonarr (series) or Radarr (movies) instance that manages them; see [why](#why-deletion-goes-only-through-sonarrradarr-exfat).
 
 - **When:** a background timer checks every 30 seconds, and once about 20 seconds after start-up. If the server was **offline at the deadline**, the vote is resolved on the next start. The scheduled task *Media Vote: resolve due votes* runs the same check manually, or hourly as a backup.
 - **Resolved only once:** the vote is marked resolved under the store lock before anything is acted on, so overlapping checks cannot resolve it twice.
-- **Crash safety:** if the server stops while winners are being processed, the vote is marked **Interrupted** at the next start and **never retried automatically**. Check the audit log, then use *Retry*.
-- **Kill switch:** while the `DISABLE` file exists, resolution (and therefore any deletion) is paused. A vote whose deadline passed resolves once the file is removed.
+- **Progress is saved after every title**, so a crash mid-run never loses what already happened. An interrupted run is marked **Interrupted** at the next start and **never retried automatically**. Check the audit log, then use *Retry*.
+- **Kill switch:** while the `DISABLE` file exists, resolution and every request to Sonarr/Radarr are paused, and Retry is refused. A vote whose deadline passed resolves once the file is removed.
+- **Safeguards:** Notify only by default · explicit confirmation checkbox · a maximum number of titles per vote (Settings, default 5, enforced when creating the vote and again while removing) · Dry run · re-check right before each delete · audit log · kill switch. **Notify only, Dry run, Preview and the Status tab use a read-only client**: any request other than GET throws before it leaves the server (unit-tested).
 
-### Order of operations (Delete automatically)
+### Order of operations (Delete via Sonarr/Radarr)
 
-1. **Pre-flight, for every winner, before anything happens:**
-   - the title still exists in Jellyfin;
-   - it is not protected (the title or its library);
-   - every path Jellyfin would delete is writable by the Jellyfin process.
+For each winner, **in rank order**, and **each one isolated**: a failure on one title never stops the others.
 
-   The write check uses `access(2)` and does not write anything. It requires write and execute permission on the parent folder and on every folder inside a movie or series folder. It reports `permission denied`, `read-only file system` or a missing mount clearly. **If any winner fails pre-flight, nothing at all is deleted** and the admin is told why.
-2. **Then, per winner, in rank order:**
-   1. **Re-check** existence and permission, because things may have changed.
-   2. **Radarr** (movies) or **Sonarr** (series) step.
-   3. **Jellyseerr** step.
-   4. **Jellyfin deletion** through `ILibraryManager.DeleteItem(item, new DeleteOptions { DeleteFileLocation = true }, true)`. This is the same call as Jellyfin's own *Delete media* action, and it removes the item, all its seasons and episodes, its metadata and its folder on disk. A series folder is deleted with every season, episode and file in it.
-3. If a **configured external step fails**, that title is **not deleted**: it is reported and processing **continues with the next title**. Steps that already ran for that title (for example Radarr unmonitor succeeded but Jellyseerr failed) are listed in the report.
-4. If the **re-check or the Jellyfin deletion fails**, processing **stops**. Nothing further is deleted and the remaining titles are marked *not attempted*.
-5. Every action is written to the audit log.
+1. **Skip** it if the `DISABLE` file exists, the title or its library is protected, or the vote's maximum is reached (*Not attempted* / *Protected*).
+2. **Match** it to exactly one Sonarr/Radarr entry across all your instances (fresh read-only lists, never cached). Not managed, ambiguous or no instance configured → **Not matched**: listed for you to remove by hand. An unreachable instance → **Sonarr/Radarr unreachable**.
+3. **Re-check** right before acting: `GET /api/v3/series/{id}` or `/movie/{id}`.
+4. **Jellyseerr** (if configured): delete its media/request record. If that fails, the title is **not** deleted (*Jellyseerr step failed*).
+5. **Delete**: `DELETE /api/v3/series/{id}?deleteFiles=true&addImportListExclusion=…` (Sonarr) or `DELETE /api/v3/movie/{id}?deleteFiles=true&addImportExclusion=…` (Radarr). This call is made **once**: there is no automatic retry, and every later attempt starts by looking the title up again, so the same entry can never be deleted twice. If Sonarr/Radarr answer with an error, their message is shown **verbatim** (*Sonarr/Radarr refused the delete*).
+6. **Verify**: ask again. Still listed → *Could not confirm removal*. Gone → **Removed**.
+7. **Reconcile Jellyfin.** Sonarr and Radarr delete the files **in the background**, after their API has already answered (verified in their source). So Media Vote checks the title's folder (read-only) and, once it is gone, drops the Jellyfin entry with `DeleteItem(…, DeleteFileLocation = false)`, which never touches files, the same call Jellyfin's own library scan makes for a folder that disappeared. Until then it asks Jellyfin to refresh that library and checks again every 30 seconds. If the files are **still there an hour later** (Sonarr/Radarr's background delete failed, the folder is shared with another title, or a recycle bin is set), the title is flagged **FILES STILL ON DISK** for you to check.
+8. Every step is written to the **audit log** (`arr_delete_requested`, `arr_removed`, `arr_delete_refused`, `jellyfin_cleanup_done`, …).
 
-**Notify only** and **Dry run** never delete anything and never call an external app in a way that changes state; they only use GET lookups.
-
-**Collections:** deleting a movie that belongs to a BoxSet (for example one made by CollectionImport) leaves that collection smaller, or empty if it was the only member. Media Vote does not edit or delete collections. Clean up empty ones in Jellyfin, or let your collection tool rebuild them.
-
----
+**Collections:** removing a movie that belongs to a BoxSet (for example one made by CollectionImport) leaves that collection smaller, or empty if it was the only member. Media Vote does not edit or delete collections.
 
 ---
 
 ## Radarr, Sonarr and Jellyseerr
 
-These are used only by **Delete automatically**; in Notify only and Dry run they are only looked up. Configure each one under **Settings**. Each is optional and has a **Test connection** button.
+Configure them under **Settings → Sonarr, Radarr and Jellyseerr**. Add one entry per server: several of each kind are supported (for example *Sonarr* and *Sonarr Anime*); every enabled instance is tried. Each has a **Test connection** button, and the Status tab shows their state read-only.
 
-- **Base URL:** for example `http://192.168.1.20:7878`. Include any URL base, such as `http://host/radarr`.
+- **Base URL:** for example `http://192.168.1.20:8989`. Include any URL base, such as `http://host/sonarr`.
 - **API key:** stored only in the plugin configuration. It is never logged, never sent back to the browser in full (shown as `••••••` plus the last 4 characters), and never in the repository. It is sent in the `X-Api-Key` header, never in a URL. Leaving the masked value unchanged keeps the saved key.
 
-| Service | Actions (default first) | Exact API calls (v3 / v1) |
-|---|---|---|
-| Radarr | **Unmonitor** · Remove + import exclusion · Do nothing | Lookup: `GET /api/v3/movie?tmdbId=` (falls back to `GET /api/v3/movie` matched by IMDb id). Unmonitor: `PUT /api/v3/movie/editor {"movieIds":[id],"monitored":false}`. Remove: `DELETE /api/v3/movie/{id}?deleteFiles=false&addImportExclusion=true`. Test: `GET /api/v3/system/status`. |
-| Sonarr (v3 and v4) | **Unmonitor** · Remove + import list exclusion · Do nothing | Lookup: `GET /api/v3/series?tvdbId=` (falls back to `GET /api/v3/series` matched by TMDb/IMDb id). Unmonitor: `PUT /api/v3/series/editor {"seriesIds":[id],"monitored":false,"monitorNewItems":"none"}`. Remove: `DELETE /api/v3/series/{id}?deleteFiles=false&addImportListExclusion=true`. Test: `GET /api/v3/system/status`. |
-| Jellyseerr | **Do nothing** · Remove media/request record | Lookup: `GET /api/v1/movie/{tmdbId}` or `GET /api/v1/tv/{tmdbId}` and read `mediaInfo.id`. Remove: `DELETE /api/v1/media/{mediaId}`, which removes the media record and its requests so the title can be requested again; the key needs the *Manage Requests* permission. Test: `GET /api/v1/auth/me` and `GET /api/v1/status`. |
+| App | Exact API calls |
+|---|---|
+| Radarr (v3 API: Radarr 3–5) | List: `GET /api/v3/movie`. Re-check / verify: `GET /api/v3/movie/{id}` (404 = gone). Delete: `DELETE /api/v3/movie/{id}?deleteFiles=true&addImportExclusion=true\|false`. Status: `GET /api/v3/system/status`, `GET /api/v3/rootfolder`, `GET /api/v3/diskspace`. |
+| Sonarr (v3 API: Sonarr 3 and 4) | List: `GET /api/v3/series`. Re-check / verify: `GET /api/v3/series/{id}` (404 = gone). Delete: `DELETE /api/v3/series/{id}?deleteFiles=true&addImportListExclusion=true\|false`. Status: as Radarr. |
+| Jellyseerr (optional) | Lookup: `GET /api/v1/movie/{tmdbId}` or `GET /api/v1/tv/{tmdbId}` → `mediaInfo.id`. Remove: `DELETE /api/v1/media/{mediaId}`, so the title can be requested again (the key needs *Manage Requests*). Test: `GET /api/v1/auth/me`, `GET /api/v1/status`. |
 
-- **Files are never deleted by Radarr or Sonarr** (`deleteFiles=false`); Jellyfin deletes them.
-- **Matching** uses the provider ids stored in Jellyfin: TMDb, TVDB and IMDb.
-  - "Not found in the app" is **not** a failure; there is nothing to re-download from there.
-  - A title with **no usable id** **is** a failure when an action is configured, because it might exist in the app unmatched. That title is not deleted. Fix it by refreshing the title's metadata in Jellyfin.
-- **Unauthorised, unreachable or timed-out** requests (30 seconds) are failures with a helpful message.
-- Behaviour was verified against the published OpenAPI specs ([Radarr](https://github.com/Radarr/Radarr/blob/develop/src/Radarr.Api.V3/openapi.json), [Sonarr](https://github.com/Sonarr/Sonarr/blob/develop/src/Sonarr.Api.V3/openapi.json), [Seerr/Jellyseerr](https://github.com/seerr-team/seerr/blob/develop/seerr-api.yml)) and covered by unit tests with mocked HTTP responses. It has **not** been run against real instances.
-
----
+- The parameter names differ on purpose: Radarr's is `addImportExclusion`, Sonarr's is `addImportListExclusion`. Both default to on in Settings, so lists do not add the title back.
+- **Verified against the source**: Sonarr's v3 branch and v4, Radarr v5 and current develop. Two details matter:
+  - Both answer the DELETE as soon as the database row is gone, and delete (or recycle-bin) the files afterwards in the background; a failure there is only written to *their* log. That is why Media Vote verifies the entry is gone **and** checks the folder disappears before Jellyfin forgets the title.
+  - Sonarr v4 answers HTTP 500 (not 404) to a DELETE for an id that no longer exists. Media Vote always re-checks with a GET first.
+- **Unauthorised, unreachable or timed-out** requests (30 seconds) are reported with a clear message; the app's own error text is shown verbatim.
+- Covered by unit tests with mocked Sonarr/Radarr/Jellyseerr servers (several instances, exact URLs and parameters, read-only guard, delete then verify, failure isolation). It has **not** been run against your real instances.
 
 ---
 
-## Docker / ZimaOS permission notes
+## Why deletion goes only through Sonarr/Radarr (exFAT)
 
-The linuxserver/jellyfin image runs Jellyfin as user **`abc`**, whose uid and gid come from the `PUID`/`PGID` container variables (ZimaOS usually uses 1000/1000 or the uid of your ZimaOS user). Deleting a title needs **write permission on its folder, everything inside it, and the parent folder**.
+Many home servers keep media on external drives formatted **exFAT** (ZimaOS setups often do). exFAT has no Unix owners or permissions: the kernel shows every file and folder with the owner and mode given by the mount options. Mounted with `fmask=0022,dmask=0022` and no `uid`/`gid`, everything is permanently **root:root, mode 755**, and `chown`/`chmod` are impossible ("Operation not permitted", even with sudo).
 
-**What Media Vote does:** before deleting anything it checks every path. On failure it deletes nothing and shows, on the result and in the audit log, a message like:
+Jellyfin in the linuxserver image runs as the `PUID`/`PGID` user, not root, so on such drives it can **never** write. 1.0.x's safety check reported exactly that (`Jellyfin (uid …) cannot write to "…": permission denied`) and correctly deleted nothing.
 
-> Jellyfin (uid 1000, gid 1000) cannot write to "/media/Movies/Film (2001)": permission denied. In the linuxserver image the process runs as user "abc" (PUID/PGID); make the media folder writable by that user.
+Rather than asking you to change mounts, owners or the container's PUID/PGID, Media Vote now leaves all file removal to **Sonarr and Radarr**, which already write to those drives (they import your downloads there). Media Vote:
+- never deletes, moves or changes a media file (unit tests scan the compiled plugin to prove it);
+- only checks, read-only, whether a title's folder still exists;
+- shows "Media folders: not writable by Jellyfin — expected and fine" on the Status tab instead of treating it as a problem.
 
-Use **Dry run** before the deadline to see any permission problems in advance.
-
-**Typical fixes:**
-
-1. Check the volumes in **ZimaOS → App → Jellyfin → Settings**. A media volume mounted **read-only** (`:ro`) shows up as *read-only file system*; make it read-write.
-2. Give the `abc` user ownership of the media folders on the host, using your PUID:PGID:
-   ```sh
-   sudo chown -R 1000:1000 "/media/YourDrive/Movies" "/media/YourDrive/TV"
-   sudo chmod -R u+rwX,g+rwX "/media/YourDrive/Movies" "/media/YourDrive/TV"
-   ```
-3. **External drives formatted exFAT or NTFS** do not store Unix owners. Ownership comes from the mount options (`uid=`, `gid=`, `umask=`). If `chown` "works" but nothing changes, remount the drive with `uid`/`gid` matching PUID/PGID, or reformat it as ext4.
-4. If Radarr/Sonarr import files as another user, make them use the same PUID/PGID (or a shared group with `umask 002`) so new files stay deletable by Jellyfin.
-
-**`index.html`:** 1.0.1.0 never writes to Jellyfin's web folder. The banner and the Vote tab need **File Transformation**. Without it, they are unavailable, while the admin page, the standalone page and the sidebar page still work.
-
----
+**`index.html`:** Media Vote never writes to Jellyfin's web folder. The banner and the Vote tab need **File Transformation**. Without it, they are unavailable, while the admin page, the standalone page and the sidebar page still work.
 
 ## Supported and unsupported clients
 
@@ -479,8 +471,6 @@ Use **Dry run** before the deadline to see any permission problems in advance.
   - Background scroll is locked while the overlay is open.
   - Posters load lazily and lists are paginated, 30 titles at a time with *load more* and auto-load.
 - On desktop: a focus trap inside the overlay, Escape closes it, and buttons and live regions are labelled for screen readers.
-
----
 
 ---
 
@@ -525,18 +515,21 @@ Media Vote is **purely additive and order-independent**:
 | Result announcement banner (dismissible, stored server-side) | ✅ |
 | Webhook: Discord or generic, for opened / closing soon / results | ✅ |
 | CSV export | ✅ |
-| Dry run (exact deletions, permission problems and external actions; read-only) | ✅ |
+| Dry run (exact Sonarr/Radarr entries and GB that would go; read-only) | ✅ |
+| Several Sonarr/Radarr/Jellyseerr instances (for example an Anime Sonarr) | ✅ 1.0.2.0 |
+| "Removable via Sonarr/Radarr" check before the vote opens (badge, filter, manual-removal list) | ✅ 1.0.2.0 |
 | Several simultaneous open votes | ⛔ Skipped on purpose: one open vote at a time keeps the banner and tab unambiguous. |
 | Push notifications to phones | ⛔ Skipped (no plugin API for it; use the webhook). |
 | Translations | ⛔ English only. |
 
 ---
 
----
-
 ## Known limitations
 
-- **Untested live:** 1.0.1.0 has **not** been run on a live Jellyfin server or real devices yet; see the next section.
+- **Untested live:** the Sonarr/Radarr removal in 1.0.2.0 has **not** been run against real Sonarr, Radarr or Jellyseerr instances, nor on a live Jellyfin server; see the next section. Do the single-title test in the [checklist](#manual-test-checklist) first.
+- **Removal needs Sonarr/Radarr:** titles they don't manage (home videos, things added by hand) can only be removed by you; the report lists them with their folder.
+- **Sonarr/Radarr delete files in the background.** If their file delete fails they only log it; Media Vote notices (the folder is still there an hour later) and flags it, but cannot fix it. A recycle bin configured in Sonarr/Radarr moves files instead of freeing space.
+- **Shared folders:** Sonarr/Radarr refuse to delete files of a title whose folder contains another title's folder (they log an error); Media Vote then flags "files still on disk".
 - **Jellyfin version:** each build works only on the Jellyfin version it was built for (10.11.10 here); see [Jellyfin version requirement](#jellyfin-version-requirement).
 - **File Transformation:** the banner and the Vote tab need it. Media Vote never edits `index.html` itself.
 - **Custom Tabs 0.2.x** pastes tab HTML into the home page's JavaScript. Media Vote cannot make other tabs safe; it can only warn.
@@ -552,35 +545,28 @@ Media Vote is **purely additive and order-independent**:
 ## What has and has not been tested
 
 **Automated, in this repository (all passing):**
-- **142 unit tests**:
-  - vote rules, ties, deadlines, time zones, order of operations, dry-run safety, storage, mocked Radarr/Sonarr/Jellyseerr HTTP;
-  - **new in 1.0.1.0:** fresh-install defaults and the 1.0.0.0 config migration; preview and kill-switch rules; kill-switch file detection;
-  - the transformation callback **never returning less than its input**, for null, empty, unusual and already-injected pages;
-  - the File Transformation payload deserialised with Newtonsoft exactly as FT 3.0.0.0 does; the callback self-test; reflection calls;
-  - self-check isolation (one failing API doesn't stop the others) and readable error JSON without stack traces;
-  - Custom Tabs leftover detection and the apostrophe hazard; Custom Tabs reading being read-only;
-  - a metadata scan proving the plugin contains no call that could write another plugin's configuration;
-  - `build.yaml` `targetAbi` matching the compiled Jellyfin version.
-- **Binary compatibility** (`tools/ApiCompat`):
-  - the 1.0.1.0 DLL binds against the **real server DLLs taken from `linuxserver/jellyfin:10.11.10`**, as well as the 10.11.10 and 10.11.11 NuGet packages;
-  - the released 1.0.0.0 DLL fails with the exact `get_Users()` error from the server log.
-- **Custom Tabs regression** (`tests/client/customtabs-chunk.js`): Custom Tabs 0.2.10.0's transformation runs on the real 10.11.10 `home-html` chunk.
-  - The 1.0.0.0 tab → `SyntaxError`, matching the blank screen.
-  - The 1.0.1.0 snippet → valid page with the mount element.
-- **Headless Chromium smoke tests** (mock jellyfin-web): everything from 1.0.0.0, plus:
-  - preview mode for a non-admin renders nothing and stops all work;
-  - "disabled" renders nothing, not even the stylesheet;
-  - `client.js` 404 is harmless, and repeated 500s stop the script after 3 requests;
-  - a mount element that appears late is filled;
-  - admin page: Users failing with 500 shows a readable error only in the picker, while settings and libraries still load; Retry; all users listed with disabled ones marked; select all/none, count and search;
-  - admin page: Go live with in-page confirmation; the snippet card and copy button; every entry point can be off.
+- **Unit tests** (`dotnet test`):
+  - vote rules, ties, deadlines, time zones, storage, webhooks, CSV;
+  - **new in 1.0.2.0:**
+    - matching: provider ids first, title + year + folder only without ids, ambiguous ids or duplicates across instances → not matched, unreachable instance → unknown;
+    - the removal flow against an in-memory Sonarr/Radarr and against **mocked HTTP servers** with the real clients: several instances, exact URLs and parameter names (`addImportExclusion` vs `addImportListExclusion`), delete then verify, verbatim error messages, one failure never stopping the others, Jellyseerr before the delete, maximum per vote, kill switch, never deleting twice on Retry, files still on disk → Jellyfin entry kept, then forgotten once they are gone, flagged after an hour;
+    - **notify-only and dry runs make no state-changing call** (read-only client throws on anything but GET);
+    - IL scans of the compiled plugin: no file delete/move outside its own data folder, `DeleteItem` only from the gateway, `DeleteFileLocation` only ever set to `false`;
+    - settings migration from 1.0.1.0 (single URLs → instances, keys not duplicated) and an XML round-trip like Jellyfin's;
+    - old 1.0.x results ("DeleteAutomatically", "PreflightFailed") still load;
+  - from 1.0.1.0: fresh-install defaults, preview and kill-switch rules, the transformation callback never returning less than its input, the File Transformation payload, self-check isolation, readable errors, Custom Tabs leftover detection, no writes to other plugins' settings, `targetAbi` matching the compiled Jellyfin version.
+- **Binary compatibility** (`tools/ApiCompat`): the DLL JIT-compiles against the real Jellyfin 10.11.10 assemblies, including the new members (`IProviderManager.QueueRefresh`, `MetadataRefreshOptions`, `DirectoryService`, `DeleteOptions.DeleteFromExternalProvider`, `VirtualFolderInfo.Locations`).
+- **Custom Tabs regression** (`tests/client/customtabs-chunk.js`): Custom Tabs 0.2.10.0's transformation on the real 10.11.10 `home-html` chunk; the 1.0.0.0 tab → `SyntaxError`, the current snippet → valid page.
+- **Headless Chromium smoke tests** (mock jellyfin-web):
+  - **new:** the vote-results banner stays closed after ✕, a home re-render, a fresh status, and a failing dismiss call (this test fails on the 1.0.1.0 script); a re-rendered Vote tab is filled again;
+  - **new (admin page):** instance editor (add an Anime Sonarr, masked key kept, test uses the saved key), removable badges and filter in the preview, unmanaged titles left out of delete votes, safety maximum shown, read-only Sonarr/Radarr status card, result wording (verbatim errors, manual-removal list, files still on disk, Retry, no pre-flight wording);
+  - from 1.0.1.0: preview mode and "disabled" render nothing, `client.js` 404/500 harmless, late mounts filled, independent admin sections with Retry, the full user picker, Go live, the snippet card.
 
-**Not tested, because it needs your live server or devices:**
-- Installing 1.0.1.0 on Jellyfin 10.11.10 and the start-up task running there (self-check results, File Transformation / Plugin Pages / HSS registration, Custom Tabs read).
-- `OnUninstalling` being called by Jellyfin, and the removal calls working.
-- The real jellyfin-web DOM with Media Bar, Home Screen Sections, Jellyfin Enhanced and Custom Tabs scripts, and the snippet rendering inside the real Custom Tabs tab.
-- Official iOS/Android apps and Jellyfin Desktop.
-- Real deletion and permission checks on your drives; real Radarr/Sonarr/Jellyseerr; Discord webhooks.
+**Not tested, because it needs your live server, instances or devices:**
+- Real Sonarr, Radarr and Jellyseerr: the actual delete, how long their background file delete takes on your drives, recycle-bin behaviour, the root-folder free space they report.
+- Jellyfin 10.11.10 forgetting the removed title (`DeleteItem` with `DeleteFileLocation = false`) and the library refresh request.
+- Installing 1.0.2.0 and the start-up task on Jellyfin 10.11.10; `OnUninstalling` being called.
+- The real jellyfin-web DOM with Media Bar, Home Screen Sections, Jellyfin Enhanced and Custom Tabs; official iOS/Android apps and Jellyfin Desktop; Discord webhooks.
 
 ---
 
@@ -589,26 +575,33 @@ Media Vote is **purely additive and order-independent**:
 Do these **in order**. The first steps are the safest. Stop at the first problem: create the `DISABLE` file and report it.
 
 1. **If you had 1.0.0.0:** delete its Vote tab in *Custom Tabs* and Save. Check that the home page is normal for you and for a non-admin.
-2. **Install** 1.0.1.0 from the repository and restart Jellyfin. Check that the home page, Media Bar, HSS, Jellyfin Enhanced and Custom Tabs still look and work exactly as before, for both an admin and a non-admin. Media Vote should be invisible.
-3. **Status & setup:** every self-check line is OK (Users shows your real user count). *Entry points* are all off except standalone. *Preview mode is ON*. The Custom Tabs check shows no warnings (after step 1).
+2. **Install / update** to 1.0.2.0 from the repository and restart Jellyfin. Check that the home page, Media Bar, HSS, Jellyfin Enhanced and Custom Tabs still look and work exactly as before, for both an admin and a non-admin.
+3. **Status & setup:** every self-check line is OK (Users shows your real user count; "Media folders" may say *not writable by Jellyfin — expected and fine*). *Preview mode is ON* on a fresh install (an update from 1.0.1.0 keeps your choice). The Custom Tabs check shows no warnings (after step 1).
 4. **Kill switch:** run `touch /DATA/AppData/jellyfin/config/data/mediavote/DISABLE` and restart. Check:
    - the Status tab shows "Disabled by file";
    - `https://<server>/MediaVote/client.js` returns only a comment;
    - `/MediaVote/vote` shows nothing for a non-admin.
 
    Then `rm /DATA/AppData/jellyfin/config/data/mediavote/DISABLE`, restart, and check the Status tab no longer says "Disabled by file".
-5. **Admin page:** *New vote → Selected users* lists **all** users, disabled ones marked; search, select all/none and the count work. Save settings works. Errors, if any, show readable text.
-6. **Test vote (Notify only)** for yourself only. Vote on the standalone page as admin. Close it early and check the report. Nothing is deleted and nothing changes in Radarr/Sonarr/Jellyseerr.
-7. **Banner on** (preview mode): hard-refresh. As admin, the banner is the top element of the home page, above Media Bar and HSS, and the overlay opens and votes. As a non-admin (private window, phone app): nothing at all. Other plugins unaffected.
-8. **Sidebar page on** (preview mode): it does not appear in anyone's menu. As admin, open `#/userpluginsettings.html?pageUrl=/MediaVote/page`; it shows the voting screen or "No active vote right now".
-9. **HSS row on** (and enabled in HSS): admins see the leaders row; non-admins don't.
-10. **Go live**, after the in-page confirmation. Non-admins now see the enabled entry points (ask them to close and reopen the app). Check on iPhone, iPad (both orientations), Android, a desktop browser and Jellyfin Desktop:
-    - the banner position, voting, the overlay and the keyboard;
-    - the "No active vote" state on the page;
-    - Jellyfin Enhanced shortcuts not firing while typing in Media Vote.
-11. **Vote tab (optional):** add the exact snippet in Custom Tabs, tick the setting, reload. The home page still loads, and the tab shows the voting screen on phone, iPad and desktop, or "No active vote right now". With the banner and tab toggles both off, the tab shows only the plain fallback text, and the home page still works.
-12. **Back to preview** hides everything from non-admins again.
-13. Before a **Delete automatically** vote: Dry run, then one throw-away movie and one throw-away series, following the 1.0.0.0 checklist items for deletion, Radarr/Sonarr/Jellyseerr, permissions and Retry.
+5. **Entry points one at a time, in preview mode** (*Settings*, save, hard-refresh each time):
+   1. **Banner:** as admin it is the top element of the home page, above Media Bar and HSS; as a non-admin (private window, phone app): nothing at all.
+   2. **Sidebar page:** in nobody's menu while in preview; as admin `#/userpluginsettings.html?pageUrl=/MediaVote/page` shows the voting screen or "No active vote right now".
+   3. **HSS row** (also enable it in HSS): admins see it, non-admins don't.
+6. **Sonarr / Radarr connections:** *Settings → Sonarr, Radarr and Jellyseerr*. Your 1.0.1.0 URLs appear as instances. Add any extra instance (for example an Anime Sonarr). Press **Test connection** on each (*Connected: Sonarr 4.x*), save, then on *Status & setup* check each instance is OK with its version, root folders and free space.
+7. **Notify-only test vote** for yourself only: *New vote*, Preview (titles Sonarr/Radarr don't manage carry a badge; *removable only* filters them), create, vote on the standalone page, **Close now**. The report names each winner's Sonarr/Radarr entry. Nothing changes anywhere (check the title is still in Sonarr/Radarr and on disk).
+8. **Results banner:** with the banner on, after that vote closes the results banner appears; press ✕, navigate around and reload: it stays closed.
+9. **Dry run:** create a *Delete via Sonarr/Radarr* vote with **one small, harmless title** (for example a short film you can re-download), N = 1, tick the confirmation. Vote for it, then **Dry run**: it names the exact entry (instance and id) and the GB that would go, and says only read-only requests were made. Check the audit log has no `arr_` entries.
+10. **One real removal:** **Close now** on that vote. Check, in this order:
+    - the result says **Removed by Sonarr/Radarr**, the audit log has `arr_delete_requested` then `arr_removed`;
+    - the title is gone from Sonarr/Radarr (and, with the exclusion on, listed under its import (list) exclusions);
+    - its folder is gone from the drive (ZimaOS Files or `ls`);
+    - within a minute or two the result shows *Jellyfin entry removed*, and the title is gone from Jellyfin for you and for a non-admin;
+    - other titles in the same library are untouched.
+
+    If it says *FILES STILL ON DISK* after an hour, check Sonarr/Radarr's log (*System → Logs*).
+11. **Go live**, after the in-page confirmation. Non-admins now see the enabled entry points (ask them to close and reopen the app). Check on iPhone, iPad, Android, a desktop browser and Jellyfin Desktop: banner position, voting, the overlay and the keyboard; Jellyfin Enhanced shortcuts don't fire while typing in Media Vote.
+12. **Vote tab (optional):** add the exact snippet in Custom Tabs, tick the setting, reload. The home page still loads, and the tab shows the voting screen or "No active vote right now".
+13. **Back to preview** hides everything from non-admins again.
 14. **Uninstall test (optional):** uninstall from the dashboard and restart. The banner, sidebar page and script disappear, and the home page and other plugins are fine.
 
 ---
@@ -624,7 +617,7 @@ All routes are relative to the server base URL, and responses are camelCase JSON
 | `GET /MediaVote/Status` | Active vote summary for this user, last result, entry points, plus `preview`, `hidden` and `disabled` flags. |
 | `GET /MediaVote/Items?…` | Paged votable titles. |
 | `POST /MediaVote/Vote` · `Unvote` · `Move` | Cast, withdraw or move a vote. |
-| `POST /MediaVote/Results/{id}/Dismiss` | Hide the result banner. |
+| `POST /MediaVote/Results/{id}/Dismiss` | Hide the result banner (the client also remembers it locally, so it never comes back). |
 
 **Anonymous:** `client.js` (inert while `DISABLE` exists), `client.css`, `page`, `vote`.
 
@@ -632,8 +625,8 @@ All routes are relative to the server base URL, and responses are camelCase JSON
 
 | Method | Routes |
 |---|---|
-| GET | `Overview` (includes self-check, kill switch, preview, entry points, Custom Tabs findings and snippet), `Users`, `Libraries`, `Search`, `Sessions/{id}`, `Sessions/{id}/Csv`, `Audit`, `Settings` |
-| POST | `Preview`, `Sessions`, `Sessions/{id}/Extend`, `/Close`, `/Cancel`, `/DryRun`, `/BreakTie`, `/Retry`, `/ResolveAnyway`, `Settings`, `Test/{service}`, `SelfCheck`, `Visibility` (`{ "previewOnly": false }` = Go live), `Reapply` |
+| GET | `Overview` (includes self-check, kill switch, preview, entry points, Custom Tabs findings and snippet, maximum titles per vote), `Users`, `Libraries`, `Search` (with `removable`), `Sessions/{id}`, `Sessions/{id}/Csv`, `Audit`, `Settings`, `ArrStatus` (read-only state of every Sonarr/Radarr/Jellyseerr instance) |
+| POST | `Preview` (with removability counts), `Sessions`, `Sessions/{id}/Extend`, `/Close`, `/Cancel`, `/DryRun`, `/BreakTie`, `/Retry`, `/ResolveAnyway`, `Settings` (with `arrInstances`), `Test/{Radarr\|Sonarr\|Jellyseerr}` (`{ id, url, apiKey }`, read-only), `SelfCheck`, `Visibility` (`{ "previewOnly": false }` = Go live), `Reapply` |
 
 ---
 
@@ -676,20 +669,21 @@ The release workflow also runs the version check and the binary check before pub
 
 ### Publishing a release
 
-1. Merge this PR into `main`. That also removes 1.0.0.0 from `manifest.json`.
+1. Merge the 1.0.2.0 PR into `main`.
 2. Tag and push:
    ```sh
    git fetch origin && git checkout main && git pull
-   git tag -a v1.0.1.0 -m "Media Vote 1.0.1.0: safety fix-up for Jellyfin 10.11.10 (see build.yaml changelog)"
-   git push origin v1.0.1.0
+   git tag -a v1.0.2.0 -m "Media Vote 1.0.2.0: delete only through Sonarr/Radarr; result banner fix"
+   git push origin v1.0.2.0
    ```
 3. `.github/workflows/release.yml` then:
    - checks versions, tests and runs the binary check;
-   - builds `media-vote_1.0.1.0.zip`;
-   - creates the GitHub Release;
-   - adds 1.0.1.0 (`targetAbi 10.11.10.0`, MD5 checksum) to `manifest.json` on `main`.
-4. Check the Actions tab. When it is green, the repository URL serves 1.0.1.0.
-5. Optional: mark the old GitHub Release `v1.0.0.0` as a pre-release or delete its zip, so nobody downloads it by hand. Its tag and history stay.
+   - builds `media-vote_1.0.2.0.zip`;
+   - creates the GitHub Release (notes from the tag message; for a lightweight tag, from the `build.yaml` changelog);
+   - adds 1.0.2.0 (`targetAbi 10.11.10.0`, MD5 checksum) to `manifest.json` on `main`, next to 1.0.1.0.
+4. Check the Actions tab. When it is green, Jellyfin offers 1.0.2.0 as an update.
+
+---
 
 ### Jellyfin 12
 
@@ -727,6 +721,13 @@ The csproj has a `JellyfinTarget` switch (`-p:JellyfinTarget=12`), and the clien
   - **jellyfin-web 10.11.10** build: `home-html.8ce38bc7d6dc073656d4.chunk.js` from the linuxserver image (fixture in `tests/client/fixtures/`).
   - **File Transformation 3.0.0.0** (tag `3.0.0.0`): `Helpers/TransformationHelper.cs` (callback payload, null/empty handling), `PluginInterface.cs` (`RemoveTransformation`), `Infrastructure/FileTransformationMiddleware.cs` → [IAmParadox27/jellyfin-plugin-file-transformation](https://github.com/IAmParadox27/jellyfin-plugin-file-transformation/tree/3.0.0.0)
   - **Plugin Pages 3.0.0.0** (`RemovePage`) and **Home Screen Sections 3.0.0.0** (no removal API), checked at their tags.
+- **1.0.2.0 additions** (read in the source):
+  - **Sonarr** `main` (v4.0.20) and branch `v3`: `src/Sonarr.Api.V3/Series/SeriesController.cs` (`DeleteSeries(int id, bool deleteFiles = false, bool addImportListExclusion = false)`), `SeriesModule.cs` (v3), `src/NzbDrone.Core/MediaFiles/MediaFileDeletionService.cs` (files deleted asynchronously by an `IHandleAsync<SeriesDeletedEvent>` handler), `RootFolderResource.cs` / `DiskSpaceResource.cs`, `SonarrErrorPipeline.cs` (error shapes) → [Sonarr/Sonarr](https://github.com/Sonarr/Sonarr)
+  - **Radarr** `develop` and tag `v5.28.0.10274`: `src/Radarr.Api.V3/Movies/MovieController.cs` (`DeleteMovie(int id, bool deleteFiles = false, bool addImportExclusion = false)`), `MediaFileDeletionService.cs` (asynchronous), `MovieResource.cs` → [Radarr/Radarr](https://github.com/Radarr/Radarr)
+  - **Jellyseerr/Seerr** `develop`: `server/routes/media.ts` (`DELETE /api/v1/media/{id}`, 204), `server/middleware/auth.ts` (`X-API-Key`) → [seerr-team/seerr](https://github.com/seerr-team/seerr)
+  - **Jellyfin 10.11.10** (tag `v10.11.10`): `Emby.Server.Implementations/Library/LibraryManager.cs` `DeleteItem` (media files are deleted only when `DeleteFileLocation` is true), `MediaBrowser.Controller/Entities/Folder.cs` `ValidateChildrenInternal2` (a scan drops vanished folders with `DeleteFileLocation = false`; an empty library folder is skipped), `MediaBrowser.Providers/Manager/ProviderManager.cs` `QueueRefresh` → [jellyfin/jellyfin](https://github.com/jellyfin/jellyfin/tree/v10.11.10)
+
+---
 
 ## License
 

@@ -43,6 +43,9 @@ public sealed class DeadlineService : BackgroundService
             }
 
             await votes.ResolveDueAsync(ct).ConfigureAwait(false);
+
+            // Titles Sonarr/Radarr removed: forget them in Jellyfin once their files are really gone (never deletes files).
+            votes.ReconcilePendingCleanups();
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {

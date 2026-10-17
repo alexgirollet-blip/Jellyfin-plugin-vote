@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Net.Http;
 using Jellyfin.Plugin.MediaVote.Configuration;
 using Jellyfin.Plugin.MediaVote.Core;
@@ -7,7 +8,7 @@ using Jellyfin.Plugin.MediaVote.Integrations.Arr;
 
 namespace Jellyfin.Plugin.MediaVote.Integrations;
 
-/// <summary>Builds the Radarr/Sonarr/Jellyseerr services from the current configuration, in execution order.</summary>
+/// <summary>Builds the Radarr/Sonarr/Jellyseerr clients from the current configuration.</summary>
 public sealed class ExternalServiceFactory
 {
     private readonly IHttpClientFactory _httpFactory;
@@ -19,27 +20,48 @@ public sealed class ExternalServiceFactory
         _config = config;
     }
 
-    /// <summary>Radarr, Sonarr, then Jellyseerr: the *arr step always runs before Jellyseerr.</summary>
-    public IReadOnlyList<IExternalService> Create()
-        => new IExternalService[] { CreateRadarr(), CreateSonarr(), CreateJellyseerr() };
-
-    public RadarrService CreateRadarr(string? url = null, string? key = null)
+    /// <summary>
+    /// Every enabled instance. <paramref name="readOnly"/> = true for notify-only, dry runs, building a vote and the
+    /// status page: such a backend can only send GET requests.
+    /// </summary>
+    public ArrRemovalBackend Create(bool readOnly)
     {
         var c = _config();
-        return new RadarrService(new ArrHttp(Client(), "Radarr", url ?? c.RadarrUrl, key ?? c.RadarrApiKey), c.RadarrAction);
+        var arr = new List<ArrClient>();
+        foreach (var kind in new[] { ArrKind.Radarr, ArrKind.Sonarr })
+        {
+            arr.AddRange(UniqueNames(c.InstancesOf(kind)).Select(p => CreateArr(p.Instance, p.Name, readOnly)));
+        }
+
+        var seerr = UniqueNames(c.InstancesOf(ArrKind.Jellyseerr)).Select(p => new JellyseerrClient(Http(p.Instance, p.Name, readOnly), p.Name, c.JellyseerrAction)).ToList();
+        return new ArrRemovalBackend(arr, seerr, readOnly);
     }
 
-    public SonarrService CreateSonarr(string? url = null, string? key = null)
+    /// <summary>A client for the connection test (always read-only).</summary>
+    public ArrClient CreateArr(ArrInstanceConfig instance, string? name = null, bool readOnly = true)
     {
         var c = _config();
-        return new SonarrService(new ArrHttp(Client(), "Sonarr", url ?? c.SonarrUrl, key ?? c.SonarrApiKey), c.SonarrAction);
+        bool exclusion = instance.Kind == ArrKind.Radarr ? c.RadarrAddImportExclusion : c.SonarrAddImportListExclusion;
+        var n = name ?? instance.DisplayName;
+        return new ArrClient(Http(instance, n, readOnly), instance.Kind, n, exclusion);
     }
 
-    public JellyseerrService CreateJellyseerr(string? url = null, string? key = null)
+    public JellyseerrClient CreateSeerr(ArrInstanceConfig instance)
+        => new(Http(instance, instance.DisplayName, true), instance.DisplayName, _config().JellyseerrAction);
+
+    /// <summary>Instance names must be unique so results can name the instance; duplicates get " (2)", " (3)".</summary>
+    private static IEnumerable<(ArrInstanceConfig Instance, string Name)> UniqueNames(IEnumerable<ArrInstanceConfig> instances)
     {
-        var c = _config();
-        return new JellyseerrService(new ArrHttp(Client(), "Jellyseerr", url ?? c.JellyseerrUrl, key ?? c.JellyseerrApiKey), c.JellyseerrAction);
+        var seen = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        foreach (var i in instances)
+        {
+            var name = i.DisplayName;
+            int n = seen.GetValueOrDefault(name) + 1;
+            seen[name] = n;
+            yield return (i, n == 1 ? name : name + " (" + n + ")");
+        }
     }
 
-    private HttpClient Client() => _httpFactory.CreateClient("MediaVote");
+    private ArrHttp Http(ArrInstanceConfig instance, string name, bool readOnly)
+        => new(_httpFactory.CreateClient("MediaVote"), name, instance.Url, instance.ApiKey, readOnly);
 }

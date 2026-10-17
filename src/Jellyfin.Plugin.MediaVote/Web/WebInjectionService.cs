@@ -1,4 +1,5 @@
 using System;
+using System.Threading;
 using System.IO;
 using System.Runtime.Serialization;
 using System.Text.Json.Serialization;
@@ -75,6 +76,7 @@ public sealed class WebInjectionService
 
     private readonly IApplicationPaths _paths;
     private readonly IServerConfigurationManager _serverConfig;
+    private static int _warned;
     private readonly ILogger<WebInjectionService> _logger;
     private bool _registered;
 
@@ -101,6 +103,7 @@ public sealed class WebInjectionService
             if (string.IsNullOrEmpty(original))
             {
                 // Nothing usable received: hand back exactly what we got (null keeps File Transformation 3.x from writing).
+                WarnOnce("Media Vote: index.html transformation received an empty payload; returning it unchanged");
                 return original;
             }
 
@@ -115,7 +118,13 @@ public sealed class WebInjectionService
                 tag = _scriptTag;
             }
 
-            return SafeInsert(original, tag);
+            var result = SafeInsert(original, tag);
+            if (ReferenceEquals(result, original) && !original.Contains(Marker, StringComparison.Ordinal))
+            {
+                WarnOnce("Media Vote: index.html has no </body> or the insert failed its integrity check; returning the page unchanged");
+            }
+
+            return result;
         }
 #pragma warning disable CA1031 // must never throw into File Transformation's pipeline
         catch (Exception ex)
@@ -123,6 +132,15 @@ public sealed class WebInjectionService
         {
             _staticLogger?.LogWarning(ex, "Media Vote: index.html transformation failed; returning the page unchanged");
             return original;
+        }
+    }
+
+    /// <summary>Logs a warning the first time only: the callback can run for every page load.</summary>
+    private static void WarnOnce(string message)
+    {
+        if (Interlocked.Exchange(ref _warned, 1) == 0)
+        {
+            _staticLogger?.LogWarning("{Message}", message);
         }
     }
 

@@ -217,9 +217,14 @@ public static class VoteRules
             errors.Add("Filters cannot be negative.");
         }
 
-        if (s.Outcome == OutcomeMode.DeleteAutomatically && !s.DeleteConfirmed)
+        if (s.Outcome == OutcomeMode.DeleteViaArr && !s.DeleteConfirmed)
         {
-            errors.Add("Automatic deletion needs the explicit confirmation checkbox.");
+            errors.Add("\"Delete via Sonarr/Radarr\" needs the explicit confirmation checkbox.");
+        }
+
+        if (s.Outcome == OutcomeMode.DeleteViaArr && s.MaxRemovals > 0 && s.WinnerCount > s.MaxRemovals)
+        {
+            errors.Add($"\"Delete via Sonarr/Radarr\" can remove at most {s.MaxRemovals} title(s) per vote (Settings). Lower the number of winners or raise the maximum.");
         }
 
         if (s.Scope == ScopeMode.SpecificLibraries && s.LibraryIds.Count == 0)

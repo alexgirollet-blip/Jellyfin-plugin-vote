@@ -11,7 +11,7 @@ public static class ResultCsv
     public static string Build(VoteSession s)
     {
         var sb = new StringBuilder();
-        sb.AppendLine("Rank,Title,Year,Type,Library,Score,RemoveVotes,KeepVotes,RemoveVoters,KeepVoters,SizeBytes,SizeGB,Outcome,Message,Paths,ExternalSteps");
+        sb.AppendLine("Rank,Title,Year,Type,Library,Score,RemoveVotes,KeepVotes,RemoveVoters,KeepVoters,SizeBytes,SizeGB,Outcome,Message,Paths,ExternalSteps,RemovableViaSonarrRadarr,SonarrRadarrEntry,JellyfinCleanup");
         var ranking = s.Result?.Ranking ?? Tally.Count(s);
         var candidates = s.Candidates.ToDictionary(c => c.ItemId);
         var outcomes = (s.Result?.Items ?? new()).ToDictionary(o => o.ItemId);
@@ -39,7 +39,10 @@ public static class ResultCsv
                 o?.Status.ToString() ?? string.Empty,
                 o?.Message ?? string.Empty,
                 o is null ? c?.Path ?? string.Empty : string.Join(" | ", o.Paths),
-                o is null ? string.Empty : string.Join(" | ", o.ExternalSteps.Select(e => $"{e.Service}: {e.Status} {e.Message}".Trim()))
+                o is null ? string.Empty : string.Join(" | ", o.ExternalSteps.Select(e => $"{e.Service}: {e.Status} {e.Message}".Trim())),
+                c?.Removable switch { true => "yes", false => "no", _ => string.Empty },
+                o?.ArrId is null ? c?.RemovalNote ?? string.Empty : $"{o.ArrInstance} #{o.ArrId.Value.ToString(CultureInfo.InvariantCulture)} {o.ArrTitle}",
+                o is null || o.JellyfinCleanup == JellyfinCleanup.None ? string.Empty : o.JellyfinCleanup.ToString()
             };
             sb.AppendLine(string.Join(",", fields.Select(Escape)));
         }

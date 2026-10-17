@@ -6,6 +6,7 @@ using Jellyfin.Plugin.MediaVote.Web;
 using MediaBrowser.Common.Configuration;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
+using MediaBrowser.Controller.Providers;
 using Microsoft.Extensions.Logging;
 
 namespace Jellyfin.Plugin.MediaVote.Services;
@@ -103,20 +104,36 @@ public sealed class ApiSelfCheck
             return $"OK, {played} played items for {user}";
         });
 
-        yield return ("Deletion API", () =>
+        yield return ("Jellyfin clean-up API", () =>
         {
-            // Only checks that the exact method Media Vote calls exists in this Jellyfin build. Nothing is deleted.
-            var m = typeof(ILibraryManager).GetMethod(nameof(ILibraryManager.DeleteItem), new[] { typeof(BaseItem), typeof(DeleteOptions), typeof(bool) });
-            return m is null
-                ? throw new MissingMethodException("ILibraryManager.DeleteItem(BaseItem, DeleteOptions, bool) not found")
-                : "OK, present (not called)";
+            // Only checks that the exact methods Media Vote calls exist in this Jellyfin build. Nothing is called.
+            var delete = typeof(ILibraryManager).GetMethod(nameof(ILibraryManager.DeleteItem), new[] { typeof(BaseItem), typeof(DeleteOptions) });
+            var refresh = typeof(IProviderManager).GetMethod(nameof(IProviderManager.QueueRefresh), new[] { typeof(Guid), typeof(MetadataRefreshOptions), typeof(RefreshPriority) });
+            if (delete is null || refresh is null)
+            {
+                throw new MissingMethodException("ILibraryManager.DeleteItem(BaseItem, DeleteOptions) or IProviderManager.QueueRefresh not found");
+            }
+
+            return "OK, present (used only to forget titles Sonarr/Radarr already deleted; never deletes files)";
         });
 
         yield return ("Vote data folder", () =>
         {
             var dir = PluginServiceRegistrator.DataDirectory(_paths);
             var check = PermissionProbe.CheckWritableDirectory(dir);
-            return check.Ok ? "OK, writable: " + dir : throw new InvalidOperationException(check.Problem);
+            return check.Writable ? "OK, writable: " + dir : throw new InvalidOperationException(dir + ": " + check.Detail);
+        });
+
+        yield return ("Media folders (information only)", () =>
+        {
+            var folders = _catalog.GetLibraryFolders();
+            var notWritable = folders.Where(f => !PermissionProbe.CheckWritableDirectory(f.Path).Writable).Select(f => f.Path).ToList();
+            if (notWritable.Count == 0)
+            {
+                return $"OK, {folders.Count} folder(s). Media Vote never writes to them either way.";
+            }
+
+            return $"OK. Not writable by Jellyfin ({PermissionProbe.DescribeProcessUser()}): {string.Join(", ", notWritable)}. This is expected and fine (for example exFAT drives are always owned by root): Sonarr/Radarr do the deleting, Media Vote never writes to media folders.";
         });
 
         yield return ("index.html transformation self-test", () =>

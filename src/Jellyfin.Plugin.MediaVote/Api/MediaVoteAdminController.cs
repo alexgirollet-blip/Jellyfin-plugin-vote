@@ -46,12 +46,32 @@ public sealed class TieRequest
     public List<Guid> ItemIds { get; set; } = new();
 }
 
-/// <summary>Connection test request. An empty key means "use the saved key".</summary>
+/// <summary>Connection test request. An empty or masked key means "use the saved key of instance <see cref="Id"/>".</summary>
 public sealed class TestRequest
 {
+    public string? Id { get; set; }
+
+    public ArrKind Kind { get; set; }
+
     public string Url { get; set; } = string.Empty;
 
     public string? ApiKey { get; set; }
+}
+
+/// <summary>A Radarr/Sonarr/Jellyseerr instance as exchanged with the admin page (key masked on the way out).</summary>
+public sealed class ArrInstanceDto
+{
+    public string? Id { get; set; }
+
+    public ArrKind Kind { get; set; }
+
+    public string Name { get; set; } = string.Empty;
+
+    public string Url { get; set; } = string.Empty;
+
+    public string ApiKey { get; set; } = string.Empty;
+
+    public bool Enabled { get; set; } = true;
 }
 
 /// <summary>Settings as exchanged with the admin page. Secrets are masked on the way out.</summary>
@@ -84,23 +104,15 @@ public sealed class SettingsDto
 
     public List<string> ProtectedLibraryIds { get; set; } = new();
 
-    public string RadarrUrl { get; set; } = string.Empty;
+    public List<ArrInstanceDto> ArrInstances { get; set; } = new();
 
-    public string RadarrApiKey { get; set; } = string.Empty;
+    public bool RadarrAddImportExclusion { get; set; } = true;
 
-    public ArrAction RadarrAction { get; set; }
-
-    public string SonarrUrl { get; set; } = string.Empty;
-
-    public string SonarrApiKey { get; set; } = string.Empty;
-
-    public ArrAction SonarrAction { get; set; }
-
-    public string JellyseerrUrl { get; set; } = string.Empty;
-
-    public string JellyseerrApiKey { get; set; } = string.Empty;
+    public bool SonarrAddImportListExclusion { get; set; } = true;
 
     public SeerrAction JellyseerrAction { get; set; }
+
+    public int MaxRemovalsPerVote { get; set; } = 5;
 
     public string WebhookUrl { get; set; } = string.Empty;
 
@@ -136,6 +148,7 @@ public sealed class MediaVoteAdminController : MediaVoteControllerBase
     private readonly IApplicationPaths _paths;
     private readonly ILibraryManager _library;
     private readonly ApiSelfCheck _selfCheck;
+    private readonly ArrLibraryCache _arrCache;
     private readonly Microsoft.Extensions.Logging.ILogger<MediaVoteAdminController> _logger;
 
     public MediaVoteAdminController(
@@ -149,8 +162,10 @@ public sealed class MediaVoteAdminController : MediaVoteControllerBase
         IApplicationPaths paths,
         ILibraryManager library,
         ApiSelfCheck selfCheck,
+        ArrLibraryCache arrCache,
         Microsoft.Extensions.Logging.ILogger<MediaVoteAdminController> logger)
     {
+        _arrCache = arrCache;
         _selfCheck = selfCheck;
         _logger = logger;
         _paths = paths;
@@ -222,6 +237,8 @@ public sealed class MediaVoteAdminController : MediaVoteControllerBase
             injection = _injection.Status,
             integrations = _registrar.Status,
             processUser = PermissionProbe.DescribeProcessUser(),
+            maxRemovalsPerVote = Config.MaxRemovalsPerVote,
+            arrInstanceCount = Config.ArrInstances.Count(i => i.Enabled),
             dataDirectory = PluginServiceRegistrator.DataDirectory(_paths),
             openSessionId = _votes.GetOpenSession()?.Id,
             sessions
@@ -236,8 +253,12 @@ public sealed class MediaVoteAdminController : MediaVoteControllerBase
     public ActionResult Libraries() => Json(_catalog.GetLibraries());
 
     [HttpGet("Search")]
-    public ActionResult Search([FromQuery] string? term)
-        => Json(_catalog.Search(term ?? string.Empty).Select(c => new { id = c.ItemId, name = c.Name, year = c.Year, kind = c.Kind, path = c.Path }));
+    public async Task<ActionResult> Search([FromQuery] string? term)
+    {
+        var found = _catalog.Search(term ?? string.Empty).ToList();
+        Removability.Annotate(found, await _arrCache.GetAsync(HttpContext.RequestAborted).ConfigureAwait(false));
+        return Json(found.Select(c => new { id = c.ItemId, name = c.Name, year = c.Year, kind = c.Kind, path = c.Path, removable = c.Removable, removalNote = c.RemovalNote }));
+    }
 
     [HttpPost("Preview")]
     public async Task<ActionResult> Preview()
@@ -250,6 +271,16 @@ public sealed class MediaVoteAdminController : MediaVoteControllerBase
 
         var cfg = Config;
         var candidates = CandidateFilter.Apply(_catalog.GetScopeCached(ScopeCacheAge), req.Settings, cfg.ProtectedItemIds.ToHashSet(), cfg.ProtectedLibraryIds.ToHashSet(StringComparer.OrdinalIgnoreCase), _votes.Clock.UtcNow);
+        var library = await _arrCache.GetAsync(HttpContext.RequestAborted).ConfigureAwait(false);
+        Removability.Annotate(candidates, library);
+        int all = candidates.Count;
+        int notRemovable = candidates.Count(c => c.Removable != true);
+        bool deleting = req.Settings.Outcome == OutcomeMode.DeleteViaArr;
+        if (deleting && !req.Settings.IncludeUnmanagedTitles)
+        {
+            candidates = candidates.Where(c => c.Removable == true).ToList();
+        }
+
         int n = Math.Max(1, req.Settings.WinnerCount);
         return Json(new
         {
@@ -258,7 +289,11 @@ public sealed class MediaVoteAdminController : MediaVoteControllerBase
             maxFreedBytes = candidates.OrderByDescending(c => c.SizeBytes).Take(n).Sum(c => c.SizeBytes),
             movies = candidates.Count(c => c.Kind == MediaKind.Movie),
             series = candidates.Count(c => c.Kind == MediaKind.Series),
-            items = candidates.Take(200).Select(c => new { id = c.ItemId, name = c.Name, year = c.Year, kind = c.Kind, library = c.LibraryName, sizeBytes = c.SizeBytes, lastPlayedUtc = c.LastPlayedUtc, playCount = c.PlayCount })
+            notRemovable,
+            excludedNotRemovable = deleting && !req.Settings.IncludeUnmanagedTitles ? all - candidates.Count : 0,
+            maxRemovals = cfg.MaxRemovalsPerVote,
+            arrErrors = library.Errors,
+            items = candidates.Take(200).Select(c => new { id = c.ItemId, name = c.Name, year = c.Year, kind = c.Kind, library = c.LibraryName, sizeBytes = c.SizeBytes, lastPlayedUtc = c.LastPlayedUtc, playCount = c.PlayCount, removable = c.Removable, removalNote = c.RemovalNote })
         });
     }
 
@@ -281,6 +316,7 @@ public sealed class MediaVoteAdminController : MediaVoteControllerBase
 
         req.Settings.DeadlineUtc = deadline.Value;
         var cfg = Config;
+        req.Settings.MaxRemovals = cfg.MaxRemovalsPerVote; // server-side safety cap, never from the browser
         var (result, session) = await _votes.CreateAsync(
             req.Settings,
             AdminName,
@@ -407,15 +443,11 @@ public sealed class MediaVoteAdminController : MediaVoteControllerBase
             ProtectedItemIds = c.ProtectedItemIds.ToList(),
             ProtectedItemNames = c.ProtectedItemIds.Distinct().ToDictionary(id => id, id => ProtectedName(id)),
             ProtectedLibraryIds = c.ProtectedLibraryIds.ToList(),
-            RadarrUrl = c.RadarrUrl,
-            RadarrApiKey = Mask(c.RadarrApiKey),
-            RadarrAction = c.RadarrAction,
-            SonarrUrl = c.SonarrUrl,
-            SonarrApiKey = Mask(c.SonarrApiKey),
-            SonarrAction = c.SonarrAction,
-            JellyseerrUrl = c.JellyseerrUrl,
-            JellyseerrApiKey = Mask(c.JellyseerrApiKey),
+            ArrInstances = c.ArrInstances.Select(i => new ArrInstanceDto { Id = i.Id, Kind = i.Kind, Name = i.Name, Url = i.Url, ApiKey = Mask(i.ApiKey), Enabled = i.Enabled }).ToList(),
+            RadarrAddImportExclusion = c.RadarrAddImportExclusion,
+            SonarrAddImportListExclusion = c.SonarrAddImportListExclusion,
             JellyseerrAction = c.JellyseerrAction,
+            MaxRemovalsPerVote = c.MaxRemovalsPerVote,
             WebhookUrl = Mask(c.WebhookUrl),
             WebhookKind = c.WebhookKind,
             WebhookOnOpened = c.WebhookOnOpened,
@@ -435,12 +467,18 @@ public sealed class MediaVoteAdminController : MediaVoteControllerBase
         }
 
         var errors = new List<string>();
-        foreach (var (name, url) in new[] { ("Radarr", d.RadarrUrl), ("Sonarr", d.SonarrUrl), ("Jellyseerr", d.JellyseerrUrl) })
+        foreach (var i in d.ArrInstances ?? new List<ArrInstanceDto>())
         {
-            if (!string.IsNullOrWhiteSpace(url) && ArrHttp.NormalizeBaseUrl(url) is null)
+            var label = string.IsNullOrWhiteSpace(i.Name) ? i.Kind.ToString() : i.Name.Trim();
+            if (string.IsNullOrWhiteSpace(i.Url) || ArrHttp.NormalizeBaseUrl(i.Url) is null)
             {
-                errors.Add($"{name} URL must start with http:// or https://");
+                errors.Add($"{label}: the URL must start with http:// or https://");
             }
+        }
+
+        if (d.MaxRemovalsPerVote < 1 || d.MaxRemovalsPerVote > 100)
+        {
+            errors.Add("\"Most titles one vote may remove\" must be between 1 and 100.");
         }
 
         if (TimeZoneHelper.Find(d.TimeZoneId).Id == "UTC" && !string.Equals(d.TimeZoneId, "UTC", StringComparison.OrdinalIgnoreCase) && !string.Equals(d.TimeZoneId, "Etc/UTC", StringComparison.OrdinalIgnoreCase))
@@ -466,15 +504,24 @@ public sealed class MediaVoteAdminController : MediaVoteControllerBase
         c.UsePlaybackReporting = d.UsePlaybackReporting;
         c.ProtectedItemIds = d.ProtectedItemIds.Distinct().ToArray();
         c.ProtectedLibraryIds = d.ProtectedLibraryIds.Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
-        c.RadarrUrl = ArrHttp.NormalizeBaseUrl(d.RadarrUrl) ?? string.Empty;
-        c.RadarrApiKey = KeepOrReplace(c.RadarrApiKey, d.RadarrApiKey);
-        c.RadarrAction = d.RadarrAction;
-        c.SonarrUrl = ArrHttp.NormalizeBaseUrl(d.SonarrUrl) ?? string.Empty;
-        c.SonarrApiKey = KeepOrReplace(c.SonarrApiKey, d.SonarrApiKey);
-        c.SonarrAction = d.SonarrAction;
-        c.JellyseerrUrl = ArrHttp.NormalizeBaseUrl(d.JellyseerrUrl) ?? string.Empty;
-        c.JellyseerrApiKey = KeepOrReplace(c.JellyseerrApiKey, d.JellyseerrApiKey);
+        var old = c.ArrInstances.ToDictionary(i => i.Id, StringComparer.Ordinal);
+        c.ArrInstances = (d.ArrInstances ?? new List<ArrInstanceDto>()).Select(i =>
+        {
+            old.TryGetValue(i.Id ?? string.Empty, out var prev);
+            return new ArrInstanceConfig
+            {
+                Id = prev?.Id ?? Guid.NewGuid().ToString("N"),
+                Kind = i.Kind,
+                Name = (i.Name ?? string.Empty).Trim(),
+                Url = ArrHttp.NormalizeBaseUrl(i.Url) ?? string.Empty,
+                ApiKey = KeepOrReplace(prev?.ApiKey ?? string.Empty, i.ApiKey),
+                Enabled = i.Enabled
+            };
+        }).ToArray();
+        c.RadarrAddImportExclusion = d.RadarrAddImportExclusion;
+        c.SonarrAddImportListExclusion = d.SonarrAddImportListExclusion;
         c.JellyseerrAction = d.JellyseerrAction;
+        c.MaxRemovalsPerVote = d.MaxRemovalsPerVote;
         c.WebhookUrl = KeepOrReplace(c.WebhookUrl, d.WebhookUrl);
         c.WebhookKind = d.WebhookKind;
         c.WebhookOnOpened = d.WebhookOnOpened;
@@ -482,7 +529,9 @@ public sealed class MediaVoteAdminController : MediaVoteControllerBase
         c.WebhookOnResults = d.WebhookOnResults;
         c.PublicServerUrl = (d.PublicServerUrl ?? string.Empty).Trim();
         Plugin.Instance.UpdateConfiguration(c);
-        _audit.Write("settings_saved", AdminName, null, "entry points: banner=" + c.EnableBanner + " tab=" + c.EnableCustomTab + " page=" + c.EnablePluginPage + " section=" + c.EnableHomeSection + " standalone=" + c.EnableStandalonePage);
+        _arrCache.Invalidate();
+        _audit.Write("settings_saved", AdminName, null, "entry points: banner=" + c.EnableBanner + " tab=" + c.EnableCustomTab + " page=" + c.EnablePluginPage + " section=" + c.EnableHomeSection + " standalone=" + c.EnableStandalonePage
+            + "; instances: " + string.Join(", ", c.ArrInstances.Select(i => i.Kind + " \"" + i.DisplayName + "\"" + (i.Enabled ? string.Empty : " (off)"))) + "; max removals " + c.MaxRemovalsPerVote);
         return Json(new { ok = true });
     }
 
@@ -490,23 +539,63 @@ public sealed class MediaVoteAdminController : MediaVoteControllerBase
     public async Task<ActionResult> Test([FromRoute] string service, CancellationToken cancellationToken)
     {
         var req = await ReadBodyAsync<TestRequest>().ConfigureAwait(false) ?? new TestRequest();
-        var c = Config;
-        string? Key(string saved) => string.IsNullOrWhiteSpace(req.ApiKey) || req.ApiKey.StartsWith(MaskPrefix, StringComparison.Ordinal) ? saved : req.ApiKey;
+        if (Enum.TryParse<ArrKind>(service, true, out var kind))
+        {
+            req.Kind = kind;
+        }
+
+        var saved = Config.ArrInstances.FirstOrDefault(i => i.Id == req.Id);
+        var key = string.IsNullOrWhiteSpace(req.ApiKey) || req.ApiKey.StartsWith(MaskPrefix, StringComparison.Ordinal) ? saved?.ApiKey ?? string.Empty : req.ApiKey;
+        var instance = new ArrInstanceConfig { Kind = req.Kind, Name = req.Kind.ToString(), Url = req.Url, ApiKey = key };
         try
         {
-            string message = service.ToLowerInvariant() switch
-            {
-                "radarr" => await _external.CreateRadarr(req.Url, Key(c.RadarrApiKey)).TestAsync(cancellationToken).ConfigureAwait(false),
-                "sonarr" => await _external.CreateSonarr(req.Url, Key(c.SonarrApiKey)).TestAsync(cancellationToken).ConfigureAwait(false),
-                "jellyseerr" => await _external.CreateJellyseerr(req.Url, Key(c.JellyseerrApiKey)).TestAsync(cancellationToken).ConfigureAwait(false),
-                _ => throw new ArrException("Unknown service.")
-            };
+            // Connection tests are read-only (GET system/status).
+            string message = req.Kind == ArrKind.Jellyseerr
+                ? await _external.CreateSeerr(instance).TestAsync(cancellationToken).ConfigureAwait(false)
+                : await _external.CreateArr(instance).TestAsync(cancellationToken).ConfigureAwait(false);
             return Json(new { ok = true, message = "Connected: " + message });
         }
         catch (ArrException ex)
         {
             return Json(new { ok = false, message = ex.Message });
         }
+    }
+
+    /// <summary>Read-only state of every Radarr/Sonarr/Jellyseerr instance: reachable, version, root folders with free space.</summary>
+    [HttpGet("ArrStatus")]
+    public async Task<ActionResult> ArrStatus(CancellationToken cancellationToken)
+    {
+        var list = new List<object>();
+        foreach (var i in Config.ArrInstances)
+        {
+            if (!i.Enabled)
+            {
+                list.Add(new { name = i.DisplayName, kind = i.Kind, enabled = false, ok = false, message = "Switched off in Settings.", rootFolders = Array.Empty<object>() });
+                continue;
+            }
+
+            try
+            {
+                if (i.Kind == ArrKind.Jellyseerr)
+                {
+                    var v = await _external.CreateSeerr(i).TestAsync(cancellationToken).ConfigureAwait(false);
+                    list.Add(new { name = i.DisplayName, kind = i.Kind, enabled = true, ok = true, message = "Connected: " + v, rootFolders = Array.Empty<object>() });
+                }
+                else
+                {
+                    var client = _external.CreateArr(i);
+                    var v = await client.TestAsync(cancellationToken).ConfigureAwait(false);
+                    var roots = await client.RootFoldersAsync(cancellationToken).ConfigureAwait(false);
+                    list.Add(new { name = i.DisplayName, kind = i.Kind, enabled = true, ok = true, message = "Connected: " + v, rootFolders = roots.Select(r => new { path = r.Path, freeSpace = r.FreeSpace, totalSpace = r.TotalSpace }).ToArray() });
+                }
+            }
+            catch (ArrException ex)
+            {
+                list.Add(new { name = i.DisplayName, kind = i.Kind, enabled = true, ok = false, message = ex.Message, rootFolders = Array.Empty<object>() });
+            }
+        }
+
+        return Json(new { instances = list });
     }
 
     /// <summary>Re-applies the entry points (and re-reads Custom Tabs, read-only).</summary>

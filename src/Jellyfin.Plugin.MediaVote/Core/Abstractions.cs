@@ -18,7 +18,7 @@ public sealed class MediaItemSnapshot
 
     public string LibraryName { get; set; } = string.Empty;
 
-    /// <summary>Paths Jellyfin will delete (movie folder/file, series folder).</summary>
+    /// <summary>The title's folder/file on disk (as Jellyfin sees it). Only ever checked for existence, never written.</summary>
     public List<string> DeletePaths { get; set; } = new();
 
     public long SizeBytes { get; set; }
@@ -31,46 +31,69 @@ public sealed class MediaItemSnapshot
         => ProviderIds.TryGetValue(name, out var v) && !string.IsNullOrWhiteSpace(v) ? v.Trim() : null;
 }
 
-/// <summary>Result of a write-permission check on the paths that would be deleted.</summary>
-public sealed record PermissionCheck(bool Ok, string? Problem = null, string? Path = null)
-{
-    public static PermissionCheck Allowed { get; } = new(true);
-}
+/// <summary>Result of dropping a stale Jellyfin entry after Sonarr/Radarr deleted the files.</summary>
+public sealed record CleanupResult(JellyfinCleanup State, string Message);
 
-/// <summary>Access to Jellyfin's library for resolution. Implemented with ILibraryManager.</summary>
+/// <summary>
+/// Access to Jellyfin's library for resolution. Media Vote never deletes, moves or changes media files: Sonarr and
+/// Radarr do that. Jellyfin is only asked to refresh, and to forget an entry whose files are already gone.
+/// </summary>
 public interface IMediaGateway
 {
     /// <summary>Returns the live item or null if it no longer exists.</summary>
     MediaItemSnapshot? GetItem(Guid itemId);
 
-    /// <summary>Checks that every path that would be deleted is writable by the Jellyfin process.</summary>
-    PermissionCheck CheckDeletePermission(MediaItemSnapshot item);
+    /// <summary>True if any of the paths still exists on disk (read-only check).</summary>
+    bool AnyPathExists(IReadOnlyCollection<string> paths);
 
-    /// <summary>Deletes the item from the library and its files from disk. Throws on failure.</summary>
-    void Delete(Guid itemId);
+    /// <summary>
+    /// Removes the Jellyfin entry for an item WITHOUT deleting files, and only when none of <paramref name="paths"/>
+    /// exists any more. Otherwise asks Jellyfin to refresh the library and reports <see cref="JellyfinCleanup.Pending"/>.
+    /// Never throws.
+    /// </summary>
+    CleanupResult CleanUpAfterRemoval(Guid itemId, IReadOnlyCollection<string> paths);
 }
 
-/// <summary>A Radarr, Sonarr or Jellyseerr integration.</summary>
-public interface IExternalService
+/// <summary>Base for failures talking to Sonarr/Radarr/Jellyseerr (message is safe to show: never contains a key).</summary>
+public class ExternalServiceException : Exception
 {
-    string Name { get; }
+    public ExternalServiceException()
+    {
+    }
 
-    /// <summary>True when a base URL and API key are configured.</summary>
-    bool HasConnection { get; }
+    public ExternalServiceException(string message)
+        : base(message)
+    {
+    }
 
-    /// <summary>Human-readable action the admin selected (e.g. "Unmonitor").</summary>
-    string ActionName { get; }
+    public ExternalServiceException(string message, Exception inner)
+        : base(message, inner)
+    {
+    }
+}
 
-    /// <summary>True when the admin chose "Do nothing" for this service.</summary>
-    bool IsNoOp { get; }
+/// <summary>
+/// The Sonarr/Radarr/Jellyseerr side of removal. A read-only backend (notify-only, dry run, building a vote) can only
+/// send GET requests; any other request throws before it leaves the server.
+/// </summary>
+public interface IRemovalBackend
+{
+    bool ReadOnly { get; }
 
-    bool AppliesTo(MediaKind kind);
+    /// <summary>Lists every movie/series of every enabled Radarr/Sonarr instance (GET only). Never throws: unreachable instances are recorded in the result.</summary>
+    Task<ArrLibrary> LoadAsync(CancellationToken cancellationToken);
 
-    /// <summary>Looks the item up and describes what would be done. MUST only use read-only (GET) calls.</summary>
-    Task<ExternalStepResult> PlanAsync(MediaItemSnapshot item, CancellationToken cancellationToken);
+    /// <summary>Asks the instance for this entry again (GET by id). Null when it no longer exists. Throws <see cref="ExternalServiceException"/> when the instance cannot be asked.</summary>
+    Task<ArrEntry?> RefetchAsync(ArrEntry entry, CancellationToken cancellationToken);
 
-    /// <summary>Performs the configured, state-changing action.</summary>
-    Task<ExternalStepResult> ExecuteAsync(MediaItemSnapshot item, CancellationToken cancellationToken);
+    /// <summary>Deletes the entry in its instance with deleteFiles=true (and the configured exclusion). Throws <see cref="ExternalServiceException"/> with the service's message.</summary>
+    Task DeleteAsync(ArrEntry entry, CancellationToken cancellationToken);
+
+    /// <summary>True when a Jellyseerr instance is configured and its action is not "Do nothing".</summary>
+    bool HasSeerrStep { get; }
+
+    /// <summary>Plans (GET only) or runs the Jellyseerr step on every Jellyseerr instance. Never throws: failures are returned as Failed steps.</summary>
+    Task<List<ExternalStepResult>> SeerrAsync(MatchKey key, bool execute, CancellationToken cancellationToken);
 }
 
 /// <summary>Audit log sink. Every vote and every deletion action is written here.</summary>

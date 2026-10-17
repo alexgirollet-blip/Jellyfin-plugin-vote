@@ -77,20 +77,22 @@ public sealed class CallLog
 
 public sealed class FakeMedia : IMediaGateway
 {
+    private static int _nextId = 1000;
     private readonly CallLog _log;
 
     public FakeMedia(CallLog log) => _log = log;
 
     public Dictionary<Guid, MediaItemSnapshot> Items { get; } = new();
 
-    public HashSet<Guid> NotWritable { get; } = new();
+    /// <summary>Paths that "exist on disk". Media Vote may only check them, never change them.</summary>
+    public HashSet<string> OnDisk { get; } = new(StringComparer.Ordinal);
 
-    public HashSet<Guid> DeleteThrows { get; } = new();
-
-    public List<Guid> Deleted { get; } = new();
+    /// <summary>Items whose stale Jellyfin entry was dropped (never deleting files).</summary>
+    public List<Guid> Forgotten { get; } = new();
 
     public MediaItemSnapshot Add(Guid id, string name, MediaKind kind = MediaKind.Movie, long size = 1000, bool isProtected = false)
     {
+        int n = Interlocked.Increment(ref _nextId);
         var s = new MediaItemSnapshot
         {
             ItemId = id,
@@ -99,78 +101,210 @@ public sealed class FakeMedia : IMediaGateway
             SizeBytes = size,
             IsProtected = isProtected,
             DeletePaths = new List<string> { "/media/" + name },
-            ProviderIds = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["Tmdb"] = "1", ["Tvdb"] = "2" }
+            ProviderIds = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["Tmdb"] = n.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                ["Tvdb"] = (n + 500000).ToString(System.Globalization.CultureInfo.InvariantCulture)
+            }
         };
         Items[id] = s;
+        OnDisk.Add("/media/" + name);
         return s;
     }
 
     public MediaItemSnapshot? GetItem(Guid itemId) => Items.TryGetValue(itemId, out var i) ? i : null;
 
-    public PermissionCheck CheckDeletePermission(MediaItemSnapshot item)
-        => NotWritable.Contains(item.ItemId) ? new PermissionCheck(false, "permission denied") : PermissionCheck.Allowed;
+    public bool AnyPathExists(IReadOnlyCollection<string> paths) => paths.Any(OnDisk.Contains);
 
-    public void Delete(Guid itemId)
+    public CleanupResult CleanUpAfterRemoval(Guid itemId, IReadOnlyCollection<string> paths)
     {
-        _log.Calls.Add("delete:" + Items[itemId].Name);
-        if (DeleteThrows.Contains(itemId))
+        _log.Calls.Add("cleanup:" + (Items.TryGetValue(itemId, out var i) ? i.Name : itemId.ToString()));
+        if (!Items.TryGetValue(itemId, out var item))
         {
-            throw new IOException("disk error");
+            return new CleanupResult(JellyfinCleanup.Done, "gone");
         }
 
-        Deleted.Add(itemId);
+        if (AnyPathExists(paths.Concat(item.DeletePaths).ToList()))
+        {
+            return new CleanupResult(JellyfinCleanup.Pending, "files still on disk");
+        }
+
         Items.Remove(itemId);
+        Forgotten.Add(itemId);
+        return new CleanupResult(JellyfinCleanup.Done, "forgotten");
     }
 }
 
-public sealed class FakeService : IExternalService
+/// <summary>
+/// In-memory Sonarr/Radarr/Jellyseerr. Records every call; a read-only instance throws on delete like the real one.
+/// </summary>
+public sealed class FakeArr : IRemovalBackend
 {
     private readonly CallLog _log;
+    private readonly FakeMedia? _media;
 
-    public FakeService(CallLog log, string name, Func<MediaKind, bool> applies, bool hasConnection = true, bool noOp = false)
+    public FakeArr(CallLog log, FakeMedia? media = null, bool readOnly = false)
     {
         _log = log;
-        Name = name;
-        _applies = applies;
-        HasConnection = hasConnection;
-        IsNoOp = noOp;
+        _media = media;
+        ReadOnly = readOnly;
     }
 
-    private readonly Func<MediaKind, bool> _applies;
+    public bool ReadOnly { get; }
 
-    public string Name { get; }
+    public List<ArrEntry> Entries { get; } = new();
 
-    public bool HasConnection { get; }
+    public Dictionary<ArrKind, int> Configured { get; } = new() { [ArrKind.Radarr] = 1, [ArrKind.Sonarr] = 1 };
 
-    public string ActionName => "Unmonitor";
+    public HashSet<string> UnreachableInstances { get; } = new();
 
-    public bool IsNoOp { get; }
+    /// <summary>Entry ids whose DELETE fails with this message (entry stays).</summary>
+    public Dictionary<int, string> DeleteRefuses { get; } = new();
 
-    public HashSet<string> FailFor { get; } = new();
+    /// <summary>Entry ids whose DELETE "succeeds" but the entry stays listed.</summary>
+    public HashSet<int> DeleteIgnored { get; } = new();
 
-    public int ExecuteCount { get; private set; }
+    /// <summary>When true, a delete also removes the files (as if Sonarr/Radarr's background delete finished at once).</summary>
+    public bool DeletesFilesAtOnce { get; set; } = true;
 
-    public int PlanCount { get; private set; }
+    public bool HasSeerrStep { get; set; }
 
-    public bool AppliesTo(MediaKind kind) => _applies(kind);
+    public HashSet<string> SeerrFailsFor { get; } = new();
 
-    public Task<ExternalStepResult> PlanAsync(MediaItemSnapshot item, CancellationToken cancellationToken)
+    public List<int> DeletedIds { get; } = new();
+
+    public int DeleteCalls { get; private set; }
+
+    /// <summary>Adds an entry that matches a FakeMedia item by its TMDb/TVDB id.</summary>
+    public ArrEntry AddFor(MediaItemSnapshot item, string? instance = null, int? id = null)
     {
-        PlanCount++;
-        _log.Calls.Add($"plan:{Name}:{item.Name}");
-        return Task.FromResult(new ExternalStepResult { Service = Name, Action = ActionName, Status = ExternalStepStatus.WouldDo });
-    }
-
-    public Task<ExternalStepResult> ExecuteAsync(MediaItemSnapshot item, CancellationToken cancellationToken)
-    {
-        ExecuteCount++;
-        _log.Calls.Add($"exec:{Name}:{item.Name}");
-        if (FailFor.Contains(item.Name))
+        var kind = item.Kind == MediaKind.Series ? ArrKind.Sonarr : ArrKind.Radarr;
+        var e = new ArrEntry
         {
-            throw new InvalidOperationException(Name + " is down");
+            Instance = instance ?? kind.ToString(),
+            Kind = kind,
+            Id = id ?? (Entries.Count + 1),
+            Title = item.Name,
+            Path = item.DeletePaths.FirstOrDefault(),
+            TmdbId = int.Parse(item.ProviderIds["Tmdb"], System.Globalization.CultureInfo.InvariantCulture),
+            TvdbId = kind == ArrKind.Sonarr ? int.Parse(item.ProviderIds["Tvdb"], System.Globalization.CultureInfo.InvariantCulture) : null,
+            SizeOnDisk = item.SizeBytes
+        };
+        Entries.Add(e);
+        return e;
+    }
+
+    public Task<ArrLibrary> LoadAsync(CancellationToken cancellationToken)
+    {
+        _log.Calls.Add("arr:list");
+        var unreachable = new Dictionary<ArrKind, List<string>>();
+        foreach (var name in UnreachableInstances)
+        {
+            var kind = name.StartsWith("Sonarr", StringComparison.Ordinal) ? ArrKind.Sonarr : ArrKind.Radarr;
+            if (!unreachable.TryGetValue(kind, out var l))
+            {
+                l = new List<string>();
+                unreachable[kind] = l;
+            }
+
+            l.Add(name);
         }
 
-        return Task.FromResult(new ExternalStepResult { Service = Name, Action = ActionName, Status = ExternalStepStatus.Done });
+        var reachable = Entries.Where(e => !UnreachableInstances.Contains(e.Instance)).Select(Copy).ToList();
+        return Task.FromResult(new ArrLibrary(reachable, Configured, unreachable));
+    }
+
+    public Task<ArrEntry?> RefetchAsync(ArrEntry entry, CancellationToken cancellationToken)
+    {
+        _log.Calls.Add("arr:get:" + entry.Title);
+        if (UnreachableInstances.Contains(entry.Instance))
+        {
+            throw new ExternalServiceException("Could not reach " + entry.Instance + ": connection refused");
+        }
+
+        var e = Entries.FirstOrDefault(x => x.Instance == entry.Instance && x.Id == entry.Id);
+        return Task.FromResult(e is null ? null : Copy(e));
+    }
+
+    public Task DeleteAsync(ArrEntry entry, CancellationToken cancellationToken)
+    {
+        if (ReadOnly)
+        {
+            throw new InvalidOperationException("read-only backend: delete blocked");
+        }
+
+        DeleteCalls++;
+        _log.Calls.Add("arr:delete:" + entry.Title);
+        if (DeleteRefuses.TryGetValue(entry.Id, out var msg))
+        {
+            throw new ExternalServiceException(msg);
+        }
+
+        if (!DeleteIgnored.Contains(entry.Id))
+        {
+            var e = Entries.First(x => x.Instance == entry.Instance && x.Id == entry.Id);
+            Entries.Remove(e);
+            DeletedIds.Add(entry.Id);
+            if (DeletesFilesAtOnce && e.Path is not null)
+            {
+                _media?.OnDisk.Remove(e.Path);
+            }
+        }
+
+        return Task.CompletedTask;
+    }
+
+    public Task<List<ExternalStepResult>> SeerrAsync(MatchKey key, bool execute, CancellationToken cancellationToken)
+    {
+        _log.Calls.Add((execute && !ReadOnly ? "seerr:exec:" : "seerr:plan:") + key.Name);
+        var r = new ExternalStepResult { Service = "Jellyseerr", Action = "Remove media/request record" };
+        if (SeerrFailsFor.Contains(key.Name))
+        {
+            r.Status = ExternalStepStatus.Failed;
+            r.Message = "Jellyseerr is down";
+        }
+        else
+        {
+            r.Status = execute && !ReadOnly ? ExternalStepStatus.Done : ExternalStepStatus.WouldDo;
+        }
+
+        return Task.FromResult(new List<ExternalStepResult> { r });
+    }
+
+    /// <summary>The same state seen through a read-only backend (what notify-only and dry runs get).</summary>
+    public IRemovalBackend View(bool readOnly) => readOnly ? new ReadOnlyView(this) : this;
+
+    private static ArrEntry Copy(ArrEntry e) => new()
+    {
+        Instance = e.Instance, Kind = e.Kind, Id = e.Id, Title = e.Title, Year = e.Year, Path = e.Path,
+        TmdbId = e.TmdbId, TvdbId = e.TvdbId, ImdbId = e.ImdbId, SizeOnDisk = e.SizeOnDisk
+    };
+
+    private sealed class ReadOnlyView : IRemovalBackend
+    {
+        private readonly FakeArr _inner;
+
+        public ReadOnlyView(FakeArr inner) => _inner = inner;
+
+        public bool ReadOnly => true;
+
+        public bool HasSeerrStep => _inner.HasSeerrStep;
+
+        public Task<ArrLibrary> LoadAsync(CancellationToken cancellationToken) => _inner.LoadAsync(cancellationToken);
+
+        public Task<ArrEntry?> RefetchAsync(ArrEntry entry, CancellationToken cancellationToken) => _inner.RefetchAsync(entry, cancellationToken);
+
+        public Task DeleteAsync(ArrEntry entry, CancellationToken cancellationToken)
+        {
+            _inner._log.Calls.Add("BLOCKED-delete:" + entry.Title);
+            throw new InvalidOperationException("read-only backend: delete blocked");
+        }
+
+        public Task<List<ExternalStepResult>> SeerrAsync(MatchKey key, bool execute, CancellationToken cancellationToken)
+        {
+            _inner._log.Calls.Add("seerr:plan:" + key.Name);
+            return Task.FromResult(new List<ExternalStepResult> { new() { Service = "Jellyseerr", Action = "Remove media/request record", Status = ExternalStepStatus.WouldDo } });
+        }
     }
 }
 

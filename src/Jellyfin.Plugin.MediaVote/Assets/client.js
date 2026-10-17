@@ -437,7 +437,7 @@
             function tick() {
                 var ms = new Date(a.deadlineUtc).getTime() - nowServer();
                 meta.textContent = (ms > 0 ? 'Closes ' + a.deadlineLocal + ' (' + a.timeZone + ') · in ' + relativeTime(ms) : 'Voting has closed') +
-                    ' · Top ' + a.winnerCount + ' ' + (a.outcome === 'DeleteAutomatically' ? 'will be removed' : 'will be reviewed by the admin');
+                    ' · Top ' + a.winnerCount + ' ' + (a.outcome === 'DeleteViaArr' ? 'will be removed' : 'will be reviewed by the admin');
             }
             tick();
             clearInterval(countdownTimer);
@@ -527,7 +527,7 @@
             if (when) { wrap.appendChild(el('p', { className: 'mediavote-meta', text: 'Closed ' + when + ' · turnout ' + r.turnoutPercent + '%' })); }
             if (!r.turnoutMet) { wrap.appendChild(el('p', { text: 'Not enough people voted, so nothing was removed.' })); }
             var list = el('ul', { className: 'mediavote-result-list' });
-            var labels = { removed: 'Removed', flagged: 'Selected for admin review', tied: 'Tied: the admin will decide', kept: 'Kept', pending: 'Pending' };
+            var labels = { removed: 'Removed', flagged: 'Selected for admin review', tied: 'Tied: the admin will decide', kept: 'Kept', pending: 'Waiting for the admin' };
             r.items.forEach(function (i) { list.appendChild(el('li', null, [el('strong', { text: i.name }), ' — ' + (labels[i.status] || i.status)])); });
             if (r.items.length) { wrap.appendChild(list); }
             else if (r.turnoutMet) { wrap.appendChild(el('p', { text: 'Nothing was selected.' })); }
@@ -585,6 +585,7 @@
             var facts = [item.kind === 'Series' ? 'Series' : 'Movie', formatBytes(item.sizeBytes)];
             if (item.library) { facts.push(item.library); }
             info.appendChild(el('p', { className: 'mediavote-facts', text: facts.join(' · ') }));
+            if (item.removable === false) { info.appendChild(el('span', { className: 'mediavote-chip', text: 'Not removable automatically' })); }
             var stats = [];
             var added = formatDate(item.dateAddedUtc);
             if (added) { stats.push('Added ' + added); }
@@ -945,6 +946,27 @@
     var webConn = webConnection();
     var bannerState = { status: null, repositions: 0, lastHash: null };
 
+    // Result banners this viewer closed. Kept in memory (and in browser storage when available) so the banner
+    // cannot be put back by the next DOM check before the server has recorded the dismissal.
+    var dismissedResults = {};
+    try {
+        (JSON.parse(window.localStorage.getItem('mediavote-dismissed') || '[]') || []).forEach(function (id) { dismissedResults[id] = true; });
+    } catch (e) { /* storage unavailable: memory only */ }
+
+    function isDismissed(result) { return !!(result && dismissedResults[result.id]); }
+
+    function rememberDismissed(id) {
+        dismissedResults[id] = true;
+        try { window.localStorage.setItem('mediavote-dismissed', JSON.stringify(Object.keys(dismissedResults).slice(-20))); } catch (e) { /* memory only */ }
+        [bannerState.status, statusCache.data].forEach(function (st) {
+            if (st && st.lastResult && st.lastResult.id === id) { st.lastResult.showBanner = false; }
+        });
+    }
+
+    function wantsResultBanner(status) {
+        return !!(status && status.lastResult && status.lastResult.showBanner && !isDismissed(status.lastResult));
+    }
+
     function removeBanner() {
         var b = document.getElementById('mediavote-banner');
         if (b) { b.remove(); }
@@ -971,9 +993,9 @@
             banner.appendChild(main);
             return banner;
         }
-        if (r && r.showBanner) {
+        if (wantsResultBanner(status)) {
             var removed = r.items.filter(function (i) { return i.status === 'removed'; }).map(function (i) { return i.name; });
-            var flagged = r.items.filter(function (i) { return i.status === 'flagged' || i.status === 'tied'; }).map(function (i) { return i.name; });
+            var flagged = r.items.filter(function (i) { return i.status === 'flagged' || i.status === 'tied' || i.status === 'pending'; }).map(function (i) { return i.name; });
             var summary = !r.turnoutMet ? 'Not enough people voted; nothing was removed.'
                 : removed.length ? 'Removed: ' + removed.join(', ')
                     : flagged.length ? 'Selected for admin review: ' + flagged.join(', ') : 'Nothing was selected.';
@@ -983,10 +1005,11 @@
             ]));
             banner.appendChild(el('button', {
                 type: 'button', className: 'mediavote-icon-btn', 'aria-label': 'Dismiss vote results',
-                onclick: function () {
+                onclick: safe(function () {
+                    rememberDismissed(r.id);
                     banner.remove();
                     Api(webConn).dismiss(r.id).then(function () { statusCache.at = 0; }, function () {});
-                }
+                })
             }, [el('span', { className: 'material-icons', 'aria-hidden': 'true', text: 'close' })]));
             return banner;
         }
@@ -1011,7 +1034,7 @@
             if (existing) { existing.remove(); }
             return;
         }
-        var wanted = (status.active && status.active.eligible) || (status.lastResult && status.lastResult.showBanner);
+        var wanted = (status.active && status.active.eligible) || wantsResultBanner(status);
         if (!wanted) {
             if (existing) { existing.remove(); }
             return;

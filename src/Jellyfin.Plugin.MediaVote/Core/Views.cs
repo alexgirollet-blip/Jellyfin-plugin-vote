@@ -52,6 +52,9 @@ public sealed class ItemView
 
     public string? ImageTag { get; set; }
 
+    /// <summary>For "Delete via Sonarr/Radarr" votes: false when Sonarr/Radarr do not manage the title (it can only be removed by hand).</summary>
+    public bool? Removable { get; set; }
+
     /// <summary>Null when live tallies are hidden.</summary>
     public int? RemoveVotes { get; set; }
 
@@ -184,6 +187,7 @@ public static class ViewBuilder
                     PlayCount = c.PlayCount,
                     Genres = c.Genres,
                     ImageTag = c.PrimaryImageTag,
+                    Removable = session.Settings.Outcome == OutcomeMode.DeleteViaArr ? c.Removable : null,
                     RemoveVotes = showTallies ? t?.RemoveVotes ?? 0 : null,
                     KeepVotes = showTallies && session.Settings.AllowKeepVotes ? t?.KeepVotes ?? 0 : null,
                     RemoveVoters = showNames && t is not null ? t.RemoveVoters.ToList() : new List<string>(),
