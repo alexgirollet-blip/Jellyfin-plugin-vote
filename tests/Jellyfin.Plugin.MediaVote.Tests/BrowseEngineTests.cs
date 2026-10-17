@@ -21,8 +21,8 @@ public class BrowseEngineTests
         new() { ItemId = Guid.NewGuid(), Name = "Delta", Kind = MediaKind.Series, Year = 2020, SizeBytes = 80 * Gb, LibraryId = "tv", LibraryName = "TV", DateAddedUtc = Now.AddMonths(-8), LastPlayedUtc = Now.AddMonths(-1), PlayCount = 30, ViewerIds = new() { Me }, EpisodeCount = 10, PlayedEpisodeCount = 10, DriveBytes = new() { ["/LM2"] = 80 * Gb }, Removable = true }
     };
 
-    private static string[] Names(ItemQuery q, bool watchAllowed = true, Func<Guid, int>? score = null)
-        => BrowseEngine.Apply(Items, q, new BrowseContext { ViewerId = Me, NowUtc = Now, WatchFiltersAllowed = watchAllowed, Score = score, DriveName = k => k == "/LM1" ? "8TB 1" : "8TB 2" }).Select(c => c.Name).ToArray();
+    private static string[] Names(ItemQuery q, bool watchAllowed = true, Func<Guid, int>? score = null, bool timesAllowed = true)
+        => BrowseEngine.Apply(Items, q, new BrowseContext { ViewerId = Me, NowUtc = Now, WatchFiltersAllowed = watchAllowed, WatchTimesAllowed = timesAllowed, Score = score, DriveName = k => k == "/LM1" ? "8TB 1" : "8TB 2" }).Select(c => c.Name).ToArray();
 
     [Fact]
     public void Sorts()
@@ -76,6 +76,15 @@ public class BrowseEngineTests
     {
         Assert.Equal(4, Names(new ItemQuery { Watched = "never" }, watchAllowed: false).Length);
         Assert.Equal(new[] { "Alpha", "Bravo", "Charlie", "Delta" }, Names(new ItemQuery { Sort = "lastplayed", Descending = true }, watchAllowed: false));
+    }
+
+    [Fact]
+    public void CountsOnly_IgnoresTimeBasedFiltersAndSorts()
+    {
+        Assert.Equal(4, Names(new ItemQuery { Watched = "notsince", Months = 12 }, timesAllowed: false).Length);
+        Assert.Equal(new[] { "Alpha", "Bravo", "Charlie", "Delta" }, Names(new ItemQuery { Sort = "lastplayed" }, timesAllowed: false));
+        Assert.Equal(new[] { "Alpha" }, Names(new ItemQuery { Watched = "never" }, timesAllowed: false)); // counts still show "never watched"
+        Assert.Equal(new[] { "Delta", "Charlie", "Bravo", "Alpha" }, Names(new ItemQuery { Sort = "playcount", Descending = true }, timesAllowed: false));
     }
 
     [Fact]

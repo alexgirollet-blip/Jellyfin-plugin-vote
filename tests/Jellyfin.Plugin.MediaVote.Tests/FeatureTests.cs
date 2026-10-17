@@ -148,7 +148,7 @@ public sealed class FeatureTests : IDisposable
 
     // ------------------------------------------------------------------ approval workflow
 
-    private (VoteService Svc, FakeArr Arr, FakeMedia Media, FakeNotifier Notifier, FakeClock Clock, List<CandidateItem> Scope, FakeUsers Users) ApprovalSetup()
+    private (VoteService Svc, FakeArr Arr, FakeMedia Media, FakeNotifier Notifier, FakeClock Clock, List<CandidateItem> Scope, FakeUsers Users) ApprovalSetup(Func<bool>? isPaused = null)
     {
         var log = new CallLog();
         var media = new FakeMedia(log);
@@ -156,7 +156,7 @@ public sealed class FeatureTests : IDisposable
         var notifier = new FakeNotifier();
         var clock = new FakeClock(Build.Now);
         var users = new FakeUsers();
-        var svc = new VoteService(Build.Store(_dir), users, media, ro => arr.View(ro), notifier, new FakeAudit(), clock);
+        var svc = new VoteService(Build.Store(_dir), users, media, ro => arr.View(ro), notifier, new FakeAudit(), clock, isPaused);
         var scope = new List<CandidateItem>();
         for (int i = 0; i < 3; i++)
         {
@@ -235,6 +235,27 @@ public sealed class FeatureTests : IDisposable
             await svc.AutoApproveDueAsync(CancellationToken.None);
             Assert.Equal(1, arr.DeleteCalls);
             Assert.Equal("auto-approve timer", svc.Get(s.Id)!.Result!.ApprovedBy);
+        }
+    }
+
+    [Fact]
+    public async Task Approval_KillSwitch_BlocksApproveAndAutoApprove()
+    {
+        bool paused = false;
+        var (svc, arr, _, _, clock, scope, users) = ApprovalSetup(() => paused);
+        using (svc)
+        {
+            var s = await ApprovalVote(svc, scope, users, autoHours: 1);
+            paused = true;
+            Assert.False((await svc.ApproveAsync(s.Id, "admin", CancellationToken.None)).Ok);
+            clock.UtcNow = clock.UtcNow.AddHours(2);
+            await svc.AutoApproveDueAsync(CancellationToken.None);
+            Assert.Equal(0, arr.DeleteCalls);
+            Assert.Equal(ExecutionState.AwaitingApproval, svc.Get(s.Id)!.Result!.Execution);
+
+            paused = false; // once the DISABLE file is gone, the overdue timer approves on the next tick
+            await svc.AutoApproveDueAsync(CancellationToken.None);
+            Assert.Equal(1, arr.DeleteCalls);
         }
     }
 

@@ -6,38 +6,60 @@ An administrator starts a vote for selected users. Users vote from a banner on t
 
 > ## ⚠️ Read this first
 >
+> - **1.1.0.0: a much easier vote builder.** One media browser everywhere (grid/list, real filters and sorts, sizes, drives, who watched it last), a deadline picker that says in plain words when the vote closes, per-drive storage bars, a free-space target, an approval step before anything is deleted, presets, tie-break rules, templates and recurring drafts, history and statistics. See [What's new in 1.1.0.0](#whats-new-in-1100). Every 1.0.2.0 safety rule is unchanged.
 > - **1.0.2.0: deletion only through Sonarr/Radarr.** Jellyfin cannot write to exFAT media drives, so Media Vote no longer deletes anything itself; "Delete automatically" became **"Delete via Sonarr/Radarr"**. See [Why deletion goes only through Sonarr/Radarr](#why-deletion-goes-only-through-sonarrradarr-exfat). It also fixes the vote-results banner coming back after you close it.
 > - **Media Vote requires Jellyfin 10.11.10.** It is built against the 10.11.10 packages with `targetAbi 10.11.10.0`. Jellyfin changes plugin APIs even inside 10.11.x, so a build only works on the Jellyfin version it was built for. See [Jellyfin version requirement](#jellyfin-version-requirement).
-> - **1.0.0.0 was withdrawn.** It broke servers: user lists failed with HTTP 500, and its Vote tab in Custom Tabs blanked the home page. It has been removed from the plugin repository. **If you installed it, do [Upgrading from 1.0.0.0](#upgrading-from-1000-or-1010) first.**
+> - **1.0.0.0 was withdrawn.** It broke servers: user lists failed with HTTP 500, and its Vote tab in Custom Tabs blanked the home page. It has been removed from the plugin repository. **If you installed it, do [Upgrading from an earlier version](#upgrading-from-an-earlier-version) first.**
 > - **Safety comes first.** After install, nothing is visible to your users. Every optional entry point is **off**, and **preview mode** shows Media Vote to administrators only until you press **Go live**. A [`DISABLE` file](#emergency-recovery-zimaos--docker) switches everything off instantly.
 
 ---
 
 ## Contents
 
-1. [Jellyfin version requirement](#jellyfin-version-requirement)
-2. [Upgrading from 1.0.0.0 or 1.0.1.0](#upgrading-from-1000-or-1010)
-3. [Install on a fresh server](#install-on-a-fresh-server)
-4. [Safe test procedure (do this before going live)](#safe-test-procedure-do-this-before-going-live)
-5. [Emergency recovery (ZimaOS / Docker)](#emergency-recovery-zimaos--docker)
-6. [What Media Vote writes, and how to undo it](#what-media-vote-writes-and-how-to-undo-it)
-7. [Entry points](#entry-points)
-8. [The Vote tab (Custom Tabs): manual setup and why](#the-vote-tab-custom-tabs-manual-setup-and-why)
-9. [Admin guide](#admin-guide)
-10. [User guide](#user-guide)
-11. [Vote rules](#vote-rules)
-12. [Resolution and deletion safety](#resolution-and-deletion-safety)
-13. [Radarr, Sonarr and Jellyseerr](#radarr-sonarr-and-jellyseerr)
-14. [Why deletion goes only through Sonarr/Radarr (exFAT)](#why-deletion-goes-only-through-sonarrradarr-exfat)
-15. [Supported and unsupported clients](#supported-and-unsupported-clients)
-16. [Compatibility with other plugins](#compatibility-with-other-plugins)
-17. [Extra features: implemented and skipped](#extra-features-implemented-and-skipped)
-18. [Known limitations](#known-limitations)
-19. [What has and has not been tested](#what-has-and-has-not-been-tested)
-20. [Manual test checklist](#manual-test-checklist)
-21. [REST API](#rest-api)
-22. [Development, CI and releases](#development-ci-and-releases)
-23. [Sources this plugin relies on](#sources-this-plugin-relies-on)
+1. [What's new in 1.1.0.0](#whats-new-in-1100)
+2. [Jellyfin version requirement](#jellyfin-version-requirement)
+3. [Upgrading from an earlier version](#upgrading-from-an-earlier-version)
+4. [Install on a fresh server](#install-on-a-fresh-server)
+5. [Safe test procedure (do this before going live)](#safe-test-procedure-do-this-before-going-live)
+6. [Emergency recovery (ZimaOS / Docker)](#emergency-recovery-zimaos--docker)
+7. [What Media Vote writes, and how to undo it](#what-media-vote-writes-and-how-to-undo-it)
+8. [Entry points](#entry-points)
+9. [The Vote tab (Custom Tabs): manual setup and why](#the-vote-tab-custom-tabs-manual-setup-and-why)
+10. [Admin guide](#admin-guide)
+11. [User guide](#user-guide)
+12. [Vote rules](#vote-rules)
+13. [Resolution and deletion safety](#resolution-and-deletion-safety)
+14. [Radarr, Sonarr and Jellyseerr](#radarr-sonarr-and-jellyseerr)
+15. [Why deletion goes only through Sonarr/Radarr (exFAT)](#why-deletion-goes-only-through-sonarrradarr-exfat)
+16. [Supported and unsupported clients](#supported-and-unsupported-clients)
+17. [Compatibility with other plugins](#compatibility-with-other-plugins)
+18. [Extra features: implemented and skipped](#extra-features-implemented-and-skipped)
+19. [Known limitations](#known-limitations)
+20. [What has and has not been tested](#what-has-and-has-not-been-tested)
+21. [Manual test checklist](#manual-test-checklist)
+22. [REST API](#rest-api)
+23. [Development, CI and releases](#development-ci-and-releases)
+24. [Sources this plugin relies on](#sources-this-plugin-relies-on)
+
+---
+
+## What's new in 1.1.0.0
+
+| Area | What you get |
+|---|---|
+| **Deadline picker** | Quick choices (*In 1 hour*, *Tonight 20:00*, *Tomorrow 20:00*, *In 3 days*, *1 week*, *2 weeks*, *End of this month*), a flexible "In N hours / days / weeks at HH:MM" row, and an exact date-and-time fallback. It always says the result in plain words, for example **"Closes Friday 23 Oct 2026 at 20:00 BST (in 7 days)"**. The **server** works out the date, so it is right across the clock change (25 Oct 2026). Your last choice is remembered. Default: in 7 days at 20:00. |
+| **One media browser** | The same browser in the admin's hand-pick step, the voting overlay, the Vote tab and the sidebar page. Grid or list; each title shows size, which drive it is on with that drive's fullness, who played it last and when (or **Never watched**), plays and viewers, date added, and (admins) whether Sonarr/Radarr can remove it. Filtering, sorting and paging happen on the server, so large libraries stay fast. |
+| **Hand-pick tray** | *Select all in this filter*, *Clear*, and a tray with the count, total size, the split per drive and what each drive would look like afterwards ("frees 134 GB on 8TB 1 (90% to 89%)"). |
+| **Drives** | Media Vote finds which physical drive each library lives on (read-only, from the container's mount table) and shows used/free space with warning (85%) and critical (95%) levels. Default names: `/LM1` = **8TB 1**, `/LM2` = **8TB 2**, `/Media` = **System drive**; rename them in Settings. |
+| **Storage tab** | Every drive with its fullness, its biggest libraries, and what the open vote's current leaders would free. |
+| **Free-space target** | Instead of "the top N", act on the leaders until a drive has *X GB free* or is *below Y % full* (still capped by the safety maximum). |
+| **Approval step** | For *Delete via Sonarr/Radarr* votes, **on by default**: when the vote closes, Media Vote prepares the final list with read-only requests and waits for you to **Approve** or **Reject**. Optional auto-approve after N hours. |
+| **Presets** | *Never watched*, *Not watched in 12 months*, *Added 6+ months ago, watched by nobody*, *Largest titles*, *Fullest drive only*, *Half-finished series nobody continues*. |
+| **Tie-break rules** | Besides "let me decide" and "act on all tied": *larger title wins*, *watched longest ago wins*, *added longest ago wins*. |
+| **Templates and recurring votes** | Save a vote's settings as a template; make it weekly or monthly. A recurring template produces a **draft for you to review**; it never opens a vote by itself. |
+| **History and statistics** | Space freed per vote and in total, turnout, most-voted titles, who takes part. |
+| **Results** | Results show each title's size and the total freed, plus a **Request it again** link (Jellyseerr) for removed titles. |
+| **Webhook extras** | The closing-soon message can name who hasn't voted yet; a message when a vote waits for your approval or a recurring draft is ready. |
 
 ---
 
@@ -45,7 +67,8 @@ An administrator starts a vote for selected users. Users vote from a banner on t
 
 | Media Vote | Built against `Jellyfin.Controller` / `Jellyfin.Model` | `targetAbi` | Runs on |
 |---|---|---|---|
-| **1.0.2.0** | **10.11.10** | **10.11.10.0** | Jellyfin **10.11.10**. CI also checks the DLL against the newest 10.11.x (non-blocking); Jellyfin itself refuses it on anything older than 10.11.10. |
+| **1.1.0.0** | **10.11.10** | **10.11.10.0** | Jellyfin **10.11.10**. CI also checks the DLL against the newest 10.11.x (non-blocking); Jellyfin itself refuses it on anything older than 10.11.10. |
+| 1.0.2.0 | 10.11.10 | 10.11.10.0 | Jellyfin 10.11.10. |
 | 1.0.1.0 | 10.11.10 | 10.11.10.0 | Jellyfin 10.11.10. |
 | 1.0.0.0 (withdrawn) | 10.11.0 | 10.11.0.0 | Broken on 10.11.10 (see below). |
 
@@ -77,7 +100,14 @@ That error happened on every page that lists users and when creating a vote.
 
 ---
 
-## Upgrading from 1.0.0.0 or 1.0.1.0
+## Upgrading from an earlier version
+
+**From 1.0.2.0:** just update in *Dashboard → Plugins* and restart. Your settings, instances and votes are kept. New settings start at safe defaults:
+- **approval before deleting is on** (no auto-approve) for every *Delete via Sonarr/Radarr* vote you create from now on;
+- drive names default to *8TB 1*, *8TB 2* and *System drive* for `/LM1`, `/LM2` and `/Media` (any other drive is named after its folder);
+- voters see who watched a title last and when, as admins do; choose *play and viewer counts only* or *nothing about watching* in *Settings → Approval and results*.
+
+A vote that was already open when you update keeps working with the rules it was created with: its list of titles was frozen at creation, so its cards have no drive, "last played by" or viewer details, and a *Delete via Sonarr/Radarr* vote created under 1.0.2.0 does **not** wait for approval (you confirmed it when you created it). Cancel and re-create it if you want the new behaviour.
 
 **From 1.0.1.0:** just update in *Dashboard → Plugins* and restart. Your entry points, preview state and votes are kept.
 - Your single Radarr / Sonarr / Jellyseerr URL and key move into the new **instance list** (*Settings → Sonarr, Radarr and Jellyseerr*). The old copies of the keys are removed from the settings file.
@@ -101,7 +131,7 @@ That error happened on every page that lists users and when creating a vote.
 https://raw.githubusercontent.com/alexgirollet-blip/Jellyfin-plugin-vote/main/manifest.json
 ```
 
-> The manifest lists 1.0.1.0 now and 1.0.2.0 once it has been released (see [Publishing a release](#publishing-a-release)). The broken 1.0.0.0 has been removed from it.
+> The manifest lists each version once it has been released (1.0.1.0 now; 1.0.2.0 and 1.1.0.0 after their tags; see [Publishing a release](#publishing-a-release)). The broken 1.0.0.0 has been removed from it.
 
 1. Make sure Jellyfin is **10.11.10** (*Dashboard → General*, or check that other plugins show 10.11.10.0).
 2. **Dashboard → Plugins → Repositories → +**: name `Media Vote`, the URL above → **Save**.
@@ -171,8 +201,8 @@ Use these from the ZimaOS host shell (SSH, or the ZimaOS terminal). The containe
 2. **Remove the plugin completely, even if Jellyfin's dashboard doesn't load:**
    ```sh
    docker stop jellyfin            # or stop the app in ZimaOS
-   ls /DATA/AppData/jellyfin/config/data/plugins/        # find "Media Vote_1.0.x.x"
-   rm -rf "/DATA/AppData/jellyfin/config/data/plugins/Media Vote_1.0.2.0"
+   ls /DATA/AppData/jellyfin/config/data/plugins/        # find "Media Vote_1.x.x.x"
+   rm -rf "/DATA/AppData/jellyfin/config/data/plugins/Media Vote_1.1.0.0"
    docker start jellyfin
    ```
    Use the folder name you actually see; the container name may differ in ZimaOS. Optional extras:
@@ -198,13 +228,14 @@ Media Vote writes **nothing** into Jellyfin's web files, **never** changes anoth
 
 | What | Where | Undo |
 |---|---|---|
-| Votes, results, audit log | `/config/data/mediavote/` (`votes.json`, `audit.jsonl`) | Delete the folder. |
+| Votes, results, templates, audit log | `/config/data/mediavote/` (`votes.json`, `templates.json`, `audit.jsonl`) | Delete the folder. |
+| Drive usage | **Read only**: `/proc/self/mountinfo` and the filesystem's free-space figures. Nothing is written. | — |
 | Its own settings, including API keys | `/config/data/plugins/configurations/Jellyfin.Plugin.MediaVote.xml` (Jellyfin's standard plugin config) | Delete the file. |
 | `index.html` script tag | **In memory only**, through File Transformation, and only while the banner or the Vote-tab toggle is on | Turn both off, uninstall, or create `DISABLE`. Nothing on disk to undo. |
 | Plugin Pages sidebar entry | **In memory only** (`RegisterPage`), only while that entry point is on | Removed automatically when turned off or on uninstall (`OnUninstalling` calls `RemovePage`). |
 | Home Screen Sections row | **In memory only** (`RegisterSection`). HSS has no removal API, so the row returns nothing when off. | Disappears after a Jellyfin restart. |
 | Custom Tabs | **Nothing.** You add and remove the Vote tab yourself. | Delete the tab in Custom Tabs. |
-| Sonarr / Radarr / Jellyseerr | Only when a **Delete via Sonarr/Radarr** vote resolves (or you press Retry): Jellyseerr media record (if configured), then Sonarr/Radarr `DELETE …?deleteFiles=true` with the import (list) exclusion you chose. **Never** in Notify only, Dry run, Preview or the Status tab: those use read-only clients that cannot send anything but GET. | Not undoable: that is the purpose of the feature. Re-add the title in Sonarr/Radarr (remove the exclusion first) to get it back. |
+| Sonarr / Radarr / Jellyseerr | Only when a **Delete via Sonarr/Radarr** vote resolves **and is approved** (when approval is on), or you press Retry: Jellyseerr media record (if configured), then Sonarr/Radarr `DELETE …?deleteFiles=true` with the import (list) exclusion you chose. **Never** in Notify only, Dry run, Preview or the Status tab: those use read-only clients that cannot send anything but GET. | Not undoable: that is the purpose of the feature. Re-add the title in Sonarr/Radarr (remove the exclusion first) to get it back. |
 | Jellyfin's own entry for a removed title | Only after Sonarr/Radarr removed it **and its files are gone from disk**: `ILibraryManager.DeleteItem(item, DeleteFileLocation = false)` drops Jellyfin's database rows and cached images/metadata for that title, exactly what a library scan does for a folder that disappeared. Until then, Media Vote only asks Jellyfin to refresh that library. | Nothing to undo: the files were already gone. |
 | Media files | **Never.** | — |
 
@@ -288,22 +319,25 @@ Open **Dashboard → Plugins → Media Vote**. The page also works on a phone.
 
 | Field | Notes |
 |---|---|
+| Start from a template | Fills the form from a saved template (see *Save as template* below). **Delete template** removes it. |
 | Title / description | Shown to voters in the banner and the voting screen. |
 | Who can vote | **All users** (any enabled account), or **selected users**. Disabled accounts can never vote. |
 | Scope | All libraries · specific libraries · movies only · series only · hand-picked titles. **Only whole Movies and whole Series** are votable, never seasons or episodes. **Collections (BoxSets) are not votable.** |
+| Hand-picked titles | Opens the **media browser** (below): browse, filter and tick titles, or press **Select all in this filter**. |
 | Filters | *Never watched by anyone* · *not watched by anyone in X months* · *only the N largest titles*. |
 | Votes per user | 1–1000. |
+| What to act on | **The top N titles** (default), **winners until a drive has at least … GB free**, or **winners until a drive is below … % full**. With a target, winners are taken in rank order, counting only what each title frees *on that drive*, until the target is met; the *Most titles one vote may remove* safety maximum still applies. If the drive's usage can't be read at the deadline, **nothing** is selected. |
+| Minimum turnout | Optional percentage of eligible voters who must vote, otherwise nothing is acted on. |
+| Deadline | The **deadline picker** (below). Times are in the configured time zone (default **Europe/London**). |
 | Several votes on one title | Off by default. When on, a user may stack several of their votes on one title. |
 | Keep votes | Optional. Each keep vote subtracts one from a title's score, and keep votes have their own allowance per user. A user can never vote both remove and keep on the same title. |
-| Deadline | Date and time in the configured time zone (default **Europe/London**). See [Deadline and time zone](#deadline-and-time-zone). |
-| Winners (N) | How many top titles to act on. |
-| Tie policy | Default: act on **none** of the tied titles and let the admin break the tie. Alternative: act on all tied titles, which may exceed N. |
-| Voter names / live tallies | Both **shown by default**. Admins always see names. When live tallies are hidden, counts and names are hidden from voters until the vote closes. |
-| Minimum turnout | Optional percentage of eligible voters who must vote, otherwise nothing is acted on. |
-| **Outcome** | **Notify only** (default): a report with names, sizes and the matching Sonarr/Radarr entries; nothing is removed anywhere. **Delete via Sonarr/Radarr**: Sonarr (series) or Radarr (movies) deletes each winner with its files. It requires an explicit confirmation checkbox (the server rejects it otherwise), N may not exceed *Most titles one vote may remove* (Settings, default 5), and every Sonarr/Radarr instance must be reachable when the vote is created. |
+| Voter names / live tallies | Both **shown by default**. Admins always see names. When live tallies are hidden, counts and names are hidden from voters until the vote closes, and voters can't sort by votes. |
+| If a tie crosses the cut-off | **Ask me** (default): act on none of the tied titles until you break the tie. **The larger title wins** · **The title watched longest ago wins** (never watched first) · **The title added longest ago wins**: the rule fills the free places; titles still exactly equal under the rule are left for you. **Act on all tied titles** (may exceed N). |
+| **Outcome** | **Notify only** (default): a report with names, sizes and the matching Sonarr/Radarr entries; nothing is removed anywhere. **Delete via Sonarr/Radarr**: Sonarr (series) or Radarr (movies) deletes each winner with its files. It requires an explicit confirmation checkbox (the server rejects it otherwise), N may not exceed *Most titles one vote may remove* (Settings, default 5), and every Sonarr/Radarr instance must be reachable when the vote is created. With *approval* on (the default), nothing is deleted until you approve the final list. |
 | Titles Sonarr/Radarr don't manage | For a *Delete via Sonarr/Radarr* vote they are **left out by default** (they could not be removed automatically). Tick *Also let people vote on titles Sonarr/Radarr do not manage* to include them; if one wins it is listed for you to remove by hand. |
+| Save these settings as a template | Give it a name and optionally make it **weekly** or **monthly** with a first date. A recurring template **never opens a vote by itself**: at each date it prepares a draft, shows it on the *Votes* tab (and in the webhook), and you press **Review and open** (or **Skip this time**). The deadline is saved as a rule ("in 7 days at 20:00"), so it is worked out again each time. |
 
-Use **Preview** to see how many titles match, their total size, the **most disk space that could be freed** (the N largest), and which titles are **not removable automatically** (badge, plus a *removable only* filter). The hand-picked title search shows the same badge. The exact figure depends on the winners; see it with **Dry run**.
+Use **Preview** to see how many titles match, their total size, the **most disk space that could be freed** (the N largest), and which titles are **not removable automatically** (badge, plus a *removable only* filter). The exact figure depends on the winners; see it with **Dry run**.
 
 Which titles Sonarr/Radarr manage is worked out with read-only requests when the list is built: by **provider ids first** (TMDb and IMDb for movies; TVDB, TMDb and IMDb for series), and only when Jellyfin has none of those ids, by **title + year + folder name** together. Anything that could be more than one entry (for example the same series in two Sonarr instances) counts as **not matched**.
 
@@ -311,16 +345,44 @@ Only **one vote can be open at a time**. The list of votable titles is frozen wh
 
 **Selected users** lists **all** users on the server: enabled and disabled, with disabled accounts clearly marked (they can't vote). It has a search box, **Select all enabled**, **Select none**, and a running count of selected users. If the user list can't be loaded, the picker shows the error and a Retry button.
 
+#### The deadline picker
+
+- **Quick choices:** *In 1 hour* · *Tonight 20:00* · *Tomorrow 20:00* · *In 3 days* · *1 week* · *2 weeks* · *End of this month* (all at 20:00 except *In 1 hour*).
+- **Flexible:** "In **N** hours / days / weeks at **HH:MM**". The time box is hidden for hours (N hours means exactly N hours from now). Days and weeks count calendar days and keep the wall-clock time, so "in 7 days at 20:00" is 20:00 local time even if the clocks change in between.
+- **Exact date and time** as a fallback.
+- Below it, the result **in plain words**, worked out by the server: for example *"Closes Friday 23 Oct 2026 at 20:00 BST (in 7 days)"*, or a clear message when the time is in the past or doesn't exist (clocks going forward).
+- Your last choice is remembered in this browser (if the browser blocks storage, only for this page visit). The first default is **in 7 days at 20:00**. The same picker is used for **Extend**.
+
+#### The media browser (hand-picking)
+
+The same browser voters use, in **picker mode**:
+
+- **Grid or list** view; **search**; filters for **type**, **library**, **drive**, **genre**, **watched** (never · not in X months · by me · not by me), **added more than X months ago**, **half-finished series**, **size** (min/max GB), **year** (from/to) and **removable by Sonarr/Radarr only**; sorts by **title, size, date added, last played, never watched first, play count, drive, year** (and **votes** for voters, when tallies are shown). Filtering, sorting and paging run on the server (cached for a short time), and the page loads more as you scroll.
+- **Presets** in one tap: *Never watched*, *Not watched in 12 months*, *Added 6+ months ago, watched by nobody*, *Largest titles*, *Fullest drive only*, *Half-finished series nobody continues*.
+- Each card: poster, title, year, size, the drive(s) it is on with a **fullness bar** (green, amber above 85%, red above 95%), **last played by whom and when** or **Never watched**, plays and number of viewers, date added, and a **removable / not removable by Sonarr/Radarr** indicator.
+- **Select all in this filter** (up to 10,000), **Clear**, and a **tray** with the count, the total size, the split per drive, and the projection for each drive ("frees 134.0 GB on 8TB 1 (90% to 89%)").
+- If the browser can't load (for example while the `DISABLE` file exists), a simple title search appears instead.
+
 ### Manage votes (*Votes* tab)
 
-- **Extend:** set a new deadline. **Close now:** resolve immediately. **Cancel:** nothing is deleted, and the votes stay in history. Each of these asks for an in-page confirmation.
+- **Alerts** at the top: votes **waiting for your approval** (with count, size and any auto-approve time; **Review**), and **recurring drafts** ready to review (**Review and open** / **Skip this time**).
+- **Extend:** a new deadline with the deadline picker. **Close now:** resolve immediately. **Cancel:** nothing is deleted, and the votes stay in history. Each of these asks for an in-page confirmation.
+- **Approve / Reject** (*Delete via Sonarr/Radarr* votes with approval on): when the vote closes, Media Vote prepares the final list **using read-only requests only** (the same as a dry run: exact Sonarr/Radarr entry and GB for each title) and waits. **Approve** runs the removal exactly as described in [Order of operations](#order-of-operations-delete-via-sonarrradarr) (fresh lookups, re-check before each delete). **Reject** removes nothing and keeps the result in history. With *auto-approve after N hours* set, the list is approved automatically when that time passes, unless you approved or rejected it first; the kill switch also pauses auto-approval.
 - **Dry run:** shows exactly which Sonarr/Radarr entry (instance and id) each winner would be, how many GB Sonarr/Radarr would free in total, which winners you would have to remove by hand, and the Jellyseerr step. It changes nothing: it uses a read-only client that can only send GET requests.
-- **Details:** the ranking with every voter's name, every vote with its time, who has not voted yet, the result, and the external steps for each title.
+- **Details:** the ranking with every voter's name, every vote with its time, who has not voted yet, the result (with each title's size and the total freed), and the external steps for each title.
 - **Tie-break:** pick up to the free number of slots among the tied titles. Unchosen tied titles are kept.
 - **Resolve anyway:** acts on the winners although minimum turnout was not met.
 - **Retry titles not removed:** for *Delete via Sonarr/Radarr* votes, retries titles that were not matched, hit an unreachable instance, were refused, could not be verified, failed the Jellyseerr step, or were never attempted. Every title is looked up again first, so nothing is ever deleted twice.
 - **CSV:** downloads the ranking and outcome. It is formula-injection safe and opens cleanly in Excel or Numbers. Downloads may not work inside the iOS app; use a browser.
-- **History** lists every vote. The **Audit log** tab lists every vote cast, moved or withdrawn, every admin action, and every deletion and external step, newest first. It is stored in `/config/data/mediavote/audit.jsonl`, rotated at 5 MB.
+- **History** lists every vote. The **Audit log** tab lists every vote cast, moved or withdrawn, every admin action (including approvals, rejections and templates), and every deletion and external step, newest first. It is stored in `/config/data/mediavote/audit.jsonl`, rotated at 5 MB.
+
+### Storage tab
+
+Read-only. For every detected drive: its name, fullness bar, used / free / total, level (OK, warning, critical, or **unknown** when it can't be read), the folders on it, and its five biggest libraries. If two folders that look like separate drives (for example `/LM1` and `/LM2`) turn out to be **the same filesystem**, a warning says so. If a vote is open, it also shows what its **current leaders** would free on each drive, before and after.
+
+### History tab
+
+Statistics from every stored vote: space freed per vote and in total (with a running total), voters and turnout per vote, the **most-voted titles** across votes, and **participation per user** (votes cast, votes taken part in out of votes they could vote in).
 
 ### Settings tab
 
@@ -329,7 +391,13 @@ Only **one vote can be open at a time**. The list of votable titles is frozen wh
 - **General:** time zone (default `Europe/London`), closing-soon reminder (default 24 h), result banner days (default 7), and Playback Reporting data (on, used only if that plugin is installed).
 - **Protected libraries and titles:** these are never votable and never removed. Protection is re-checked right before anything is sent to Sonarr/Radarr.
 - **Sonarr, Radarr and Jellyseerr:** a list of instances (add as many as you have, for example a separate Anime Sonarr), each with name, URL, masked API key, *Use this instance* and **Test connection**; the import (list) exclusion options; the Jellyseerr step; and **Most titles one vote may remove** (1–100, default 5). See [below](#radarr-sonarr-and-jellyseerr).
-- **Webhook:** Discord or generic JSON. The URL is stored masked.
+- **Approval and results:**
+  - **Wait for my approval** before a *Delete via Sonarr/Radarr* vote removes anything (**on** by default, recommended);
+  - **Approve automatically after … hours** (0 = never, the default; up to 720);
+  - **Public Jellyseerr address** for the *Request it again* links in results (optional; for example `https://requests.example.com`). Without it, no link is shown. The link uses the title's TMDb id;
+  - **Watch details voters see:** *who watched it last and when, plays and viewers* (default) · *play and viewer counts only* · *nothing about watching*. Admins always see everything. Filters and sorts that would give hidden details away are removed for voters and ignored by the server: with *counts only*, "not watched in X months" and "last played"; with *nothing*, every watch filter and sort.
+- **Drives:** every detected drive with an editable **name** (defaults: `/LM1` = *8TB 1*, `/LM2` = *8TB 2*, `/Media` = *System drive*), and the **warning** (default 85%) and **critical** (default 95%) thresholds.
+- **Webhook:** Discord or generic JSON (the URL is stored masked), with a switch for each message: vote opened · closing soon · results · approval needed and recurring drafts ready · *add "Not voted yet: …" to the closing-soon message*.
 
 ### Status & setup tab
 
@@ -347,11 +415,14 @@ Only **one vote can be open at a time**. The list of votable titles is frozen wh
 ## User guide
 
 1. Open Jellyfin. While a vote is open for you, a banner such as **"Vote: Spring clean-up · You have 3 votes left · closes Saturday 1 June 2026, 20:00"** appears at the top of the home page. It shows **"Not voted yet"** until you vote, and **"Closing soon"** near the deadline.
-2. Tap the banner, or open the **Vote** tab or the **Vote** sidebar page.
-3. Browse every votable title with its poster, title, year, type, size, library, date added, last played and play count. **Search**, filter by **type** or **genre**, **sort** by title, year, size, votes, date added, last played or play count, or show only **My votes**.
-4. Tap **Vote to remove**. Your remaining votes are shown at the top and bottom. Tap **Voted ✓ · undo** to take a vote back. If you have no votes left and tap another title, you are offered to **move** one of your votes to it.
-5. You can change your votes until the deadline. After the vote closes, a result banner lists what was removed or flagged. Close it with **✕** and it stays closed (fixed in 1.0.2.0; in 1.0.1.0 it came straight back).
-6. In a *Delete via Sonarr/Radarr* vote that includes titles Sonarr/Radarr don't manage, those show a **"Not removable automatically"** badge.
+2. Tap the banner, or open the **Vote** tab or the **Vote** sidebar page. They all show the same **media browser**.
+3. Browse every votable title in a **grid** or a **list** (your choice is remembered). Each title shows its poster, title, year, type and size; **which drive it is on**, with a bar showing how full that drive is; **who played it last and when**, or **Never watched**; how many plays and viewers; and when it was added. (Your admin may show only counts, or nothing about watching.)
+4. **Search**, filter by **type**, **library**, **drive**, **genre** or **watched** (never · not in 6/12/24 months · by me · not by me), and **sort** by title, votes, size, date added, year, drive, last played, play count or never-watched first. **My votes** shows only the titles you voted on. More titles load as you scroll.
+5. Tap **Vote to remove**. Your remaining votes are shown at the top and bottom. Tap **Voted ✓ · undo** to take a vote back. If you have no votes left and tap another title, you are offered to **move** one of your votes to it.
+6. You can change your votes until the deadline. After the vote closes, a result banner lists what was removed or flagged, **with each title's size and the total space freed**. Where the admin set it up, removed titles have a **Request it again** link (Jellyseerr). Close the banner with **✕** and it stays closed.
+7. In a *Delete via Sonarr/Radarr* vote that includes titles Sonarr/Radarr don't manage, those show a **"Not removable automatically"** badge.
+
+The browser works with a keyboard and screen readers: every control has a label, focus is visible, the result counts are announced, and nothing depends on colour alone (drive bars also say the percentage).
 
 Your votes are **not anonymous**: your name and the time of each vote are stored. Admins always see who voted for what, and other participants see names too unless the admin turned that off.
 
@@ -365,23 +436,25 @@ All rules are enforced **on the server**, in `Core/VoteRules.cs` and `Core/VoteS
 - **Limits:** a user cannot exceed their remove-vote allowance or their keep-vote allowance. By default a user can put at most one vote on a given title.
 - **Deadline:** votes, withdrawals and moves are refused from the deadline onwards, even before the vote has been resolved.
 - **Score:** remove votes minus keep votes. Only titles with a **score above 0** can win.
-- **Ranking:** by score, highest first. Equal scores are a tie; nothing (name, date, size) breaks ties automatically.
+- **Ranking:** by score, highest first. Equal scores are a tie; by default nothing (name, date, size) breaks ties automatically.
 - **Winners:** the top N. If titles share the N-th place score and they do not all fit, the tie **crosses the cut-off**:
   - **Default (FlagForAdmin):** the clear winners above the tie are acted on. **None of the tied titles is acted on**, and the vote is flagged *needs attention* so the admin can break the tie.
+  - **LargerSizeWins / LeastRecentlyWatchedWins / OldestAddedWins** (1.1.0.0): the rule picks which tied titles fill the free places (largest first; watched longest ago first, never watched before anything; added longest ago first). If the rule itself can't separate the titles competing for the last place (same size, same date), those are flagged for the admin as with the default.
   - **IncludeAllTied:** all tied titles are acted on, which may exceed N.
   - If the tied titles exactly fill the remaining places, there is no tie problem.
+- **Free-space target** (1.1.0.0, instead of N): titles with a score above 0 are taken in rank order until the chosen drive would have at least X GB free, or be below Y % full. Only the part of a title stored on that drive counts. It never takes more than *Most titles one vote may remove* for a delete vote, and if the drive's usage can't be read, nothing is selected. Ties are **not** treated specially in this mode: equal scores are taken in the ranking's order (more remove votes first, otherwise a fixed but arbitrary order). Use the approval step to check the list.
 - **Turnout:** distinct users with at least one vote, divided by eligible users. If a minimum is set and not met, nothing is acted on and the admin is told.
 
 ### Deadline and time zone
 
-The admin enters the deadline as a local time in the configured zone (default Europe/London), and it is stored in UTC.
+The admin picks the deadline with the [deadline picker](#the-deadline-picker). The browser only sends the choice ("tomorrow at 20:00", "in 3 days at 18:30", or an exact local time); **the server** works out the moment in the configured zone (default Europe/London), stores it in UTC, and sends back the plain-words description shown under the picker.
 
+- **Calendar days, not 24-hour blocks:** "in 7 days at 20:00" chosen on Tuesday 20 Oct 2026 is **20:00 GMT on Tuesday 27 Oct 2026**, after the clocks go back on Sunday 25 Oct, not 19:00 or 21:00. "In N hours" is exactly N hours.
 - **Clocks go forward** (for example 01:30 on the last Sunday of March): that time does not exist and is rejected with a message.
 - **Clocks go back** (for example 01:30 on the last Sunday of October): that time happens twice, and the **first** occurrence (BST) is used, so a vote never closes later than expected.
+- A deadline in the past, or "Tonight 20:00" after 20:00, is refused with a message.
 
 If the server cannot find the time zone, the *Status & setup* tab warns and UTC is used.
-
----
 
 ## Resolution and deletion safety
 
@@ -391,11 +464,12 @@ Media Vote **never deletes, moves or changes a media file**. Titles are removed 
 - **Resolved only once:** the vote is marked resolved under the store lock before anything is acted on, so overlapping checks cannot resolve it twice.
 - **Progress is saved after every title**, so a crash mid-run never loses what already happened. An interrupted run is marked **Interrupted** at the next start and **never retried automatically**. Check the audit log, then use *Retry*.
 - **Kill switch:** while the `DISABLE` file exists, resolution and every request to Sonarr/Radarr are paused, and Retry is refused. A vote whose deadline passed resolves once the file is removed.
-- **Safeguards:** Notify only by default · explicit confirmation checkbox · a maximum number of titles per vote (Settings, default 5, enforced when creating the vote and again while removing) · Dry run · re-check right before each delete · audit log · kill switch. **Notify only, Dry run, Preview and the Status tab use a read-only client**: any request other than GET throws before it leaves the server (unit-tested).
+- **Approval (1.1.0.0, on by default):** a *Delete via Sonarr/Radarr* vote stops after working out its winners. The final list is prepared with read-only requests, and nothing below runs until the admin presses **Approve** (or the optional auto-approve timer expires). **Reject** removes nothing.
+- **Safeguards:** Notify only by default · approval before deleting · explicit confirmation checkbox · a maximum number of titles per vote (Settings, default 5, enforced when creating the vote and again while removing) · Dry run · re-check right before each delete · audit log · kill switch. **Notify only, Dry run, Preview and the Status tab use a read-only client**: any request other than GET throws before it leaves the server (unit-tested).
 
 ### Order of operations (Delete via Sonarr/Radarr)
 
-For each winner, **in rank order**, and **each one isolated**: a failure on one title never stops the others.
+After approval (when approval is on), for each winner, **in rank order**, and **each one isolated**: a failure on one title never stops the others.
 
 1. **Skip** it if the `DISABLE` file exists, the title or its library is protected, or the vote's maximum is reached (*Not attempted* / *Protected*).
 2. **Match** it to exactly one Sonarr/Radarr entry across all your instances (fresh read-only lists, never cached). Not managed, ambiguous or no instance configured → **Not matched**: listed for you to remove by hand. An unreachable instance → **Sonarr/Radarr unreachable**.
@@ -509,15 +583,24 @@ Media Vote is **purely additive and order-independent**:
 | Minimum turnout (report to admin, *Resolve anyway* override) | ✅ |
 | Protected titles and libraries (never votable, never deletable; re-checked before deletion) | ✅ |
 | "Keep" votes that subtract from the score (admin toggle, own allowance) | ✅ |
-| Per-item info: size, date added, last played by anyone, play count | ✅ |
 | Build filters: never watched · not watched in X months · largest files | ✅ |
 | Closing-soon reminder and "you haven't voted yet" indicator | ✅ |
-| Result announcement banner (dismissible, stored server-side) | ✅ |
-| Webhook: Discord or generic, for opened / closing soon / results | ✅ |
 | CSV export | ✅ |
 | Dry run (exact Sonarr/Radarr entries and GB that would go; read-only) | ✅ |
 | Several Sonarr/Radarr/Jellyseerr instances (for example an Anime Sonarr) | ✅ 1.0.2.0 |
 | "Removable via Sonarr/Radarr" check before the vote opens (badge, filter, manual-removal list) | ✅ 1.0.2.0 |
+| **G** Deadline picker: quick choices, flexible row, exact fallback, plain-words result, server-side DST-correct computation, remembered choice | ✅ 1.1.0.0 |
+| **H** One shared media browser (admin hand-pick, overlay, Vote tab, sidebar page): grid/list, server-side filters/sorts/paging, card details, picker tray, voting mode, watch-details setting | ✅ 1.1.0.0 |
+| **I** Drives: mount-table detection, grouping by filesystem, shared-filesystem warning, names, thresholds, projections, 60 s cache, "unknown" | ✅ 1.1.0.0 (Linux only; see limitations) |
+| **J1** Storage tab | ✅ 1.1.0.0 |
+| **J2** Free-space target ("until 8TB 1 has 500 GB free" / "below 85 % full") | ✅ 1.1.0.0 (ties not special-cased; see [Vote rules](#vote-rules)) |
+| **J3** Approval step for deletes (default on, optional auto-approve) | ✅ 1.1.0.0 |
+| **J4** Smart presets (6) | ✅ 1.1.0.0 (admin hand-pick browser; voters get the same filters without the preset buttons) |
+| **J5** Tie-break rules (larger size, watched longest ago, added longest ago) | ✅ 1.1.0.0 |
+| **J6** Templates and recurring votes (weekly/monthly drafts the admin reviews; never auto-open) | ✅ 1.1.0.0 |
+| **J7** History and statistics (space freed, turnout, most-voted titles, participation) | ✅ 1.1.0.0 (tables, no charts) |
+| **J8** Result announcements with sizes, total freed, "Request it again" link | ✅ 1.1.0.0 (link needs the public Jellyseerr address and a TMDb id) |
+| **J9** Webhook extras: non-voters in closing-soon, approval needed, draft ready | ✅ 1.1.0.0 |
 | Several simultaneous open votes | ⛔ Skipped on purpose: one open vote at a time keeps the banner and tab unambiguous. |
 | Push notifications to phones | ⛔ Skipped (no plugin API for it; use the webhook). |
 | Translations | ⛔ English only. |
@@ -526,7 +609,12 @@ Media Vote is **purely additive and order-independent**:
 
 ## Known limitations
 
-- **Untested live:** the Sonarr/Radarr removal in 1.0.2.0 has **not** been run against real Sonarr, Radarr or Jellyseerr instances, nor on a live Jellyfin server; see the next section. Do the single-title test in the [checklist](#manual-test-checklist) first.
+- **Untested live:** the Sonarr/Radarr removal (1.0.2.0) and everything new in 1.1.0.0 have **not** been run against real Sonarr, Radarr or Jellyseerr instances, real drives, or a live Jellyfin server; see the next section. Do the single-title test in the [checklist](#manual-test-checklist) first.
+- **Drive detection needs Linux** (`/proc/self/mountinfo`, as in the Docker image). Elsewhere drives show as unknown, the drive filter and bars are missing, and a free-space target selects nothing. Usage comes from the filesystem (like `df`), cached for about a minute, so it can lag just after a removal. A Docker volume mounted from a folder of a bigger disk shows that whole disk.
+- **Free-space target and ties:** in target mode, equal scores are taken in the ranking's order; the tie rules apply only to "top N".
+- **Frozen lists:** watch details, drives and removability are captured when a vote is created; votes created before 1.1.0.0 have no drive or "last played by" details.
+- **Recurring templates** create a draft at the chosen time (checked every 30 seconds while Jellyfin runs, or at the next start); they never open a vote by themselves. The deadline rule is re-applied when you press *Review and open*.
+- **Statistics** only cover votes stored by this plugin (history starts with your first vote) and "space freed" uses Sonarr/Radarr's size when known, otherwise Jellyfin's.
 - **Removal needs Sonarr/Radarr:** titles they don't manage (home videos, things added by hand) can only be removed by you; the report lists them with their folder.
 - **Sonarr/Radarr delete files in the background.** If their file delete fails they only log it; Media Vote notices (the folder is still there an hour later) and flags it, but cannot fix it. A recycle bin configured in Sonarr/Radarr moves files instead of freeing space.
 - **Shared folders:** Sonarr/Radarr refuse to delete files of a title whose folder contains another title's folder (they log an error); Media Vote then flags "files still on disk".
@@ -547,6 +635,11 @@ Media Vote is **purely additive and order-independent**:
 **Automated, in this repository (all passing):**
 - **Unit tests** (`dotnet test`):
   - vote rules, ties, deadlines, time zones, storage, webhooks, CSV;
+  - **new in 1.1.0.0:**
+    - deadline calculator: every quick choice, flexible hours/days/weeks, exact times, "in 7 days at 20:00" across the 25 Oct 2026 clock change (20:00 GMT, not 19:00), "in 6 hours" across it (six real hours), the spring-forward gap, the repeated hour, past times, the plain-words description with BST/GMT;
+    - drives: parsing a real-shaped container `mountinfo` (pseudo filesystems skipped, `\040` spaces), longest-prefix matching on folder boundaries (`/LM1` never matches `/LM10`), grouping by filesystem, the `/LM1` + `/LM2` same-filesystem warning, default and admin names, percentages like `df`, warning/critical levels, projections;
+    - the browse engine: every filter, sort and preset, hidden tallies and hidden watch details (filters and sorts ignored, so nothing leaks; *counts only* ignores the time-based ones), paging, facets, per-drive bars;
+    - tie rules, free-space and percentage targets (including unknown drive usage → nothing selected, and the safety maximum), the approval flow (prepare read-only, approve, reject, auto-approve timer, kill switch), recurring template dates (weekly, monthly, short months keeping the chosen day) and "only a draft, once", statistics, webhook texts (non-voters, approval), "Request it again" links;
   - **new in 1.0.2.0:**
     - matching: provider ids first, title + year + folder only without ids, ambiguous ids or duplicates across instances → not matched, unreachable instance → unknown;
     - the removal flow against an in-memory Sonarr/Radarr and against **mocked HTTP servers** with the real clients: several instances, exact URLs and parameter names (`addImportExclusion` vs `addImportListExclusion`), delete then verify, verbatim error messages, one failure never stopping the others, Jellyseerr before the delete, maximum per vote, kill switch, never deleting twice on Retry, files still on disk → Jellyfin entry kept, then forgotten once they are gone, flagged after an hour;
@@ -558,14 +651,16 @@ Media Vote is **purely additive and order-independent**:
 - **Binary compatibility** (`tools/ApiCompat`): the DLL JIT-compiles against the real Jellyfin 10.11.10 assemblies, including the new members (`IProviderManager.QueueRefresh`, `MetadataRefreshOptions`, `DirectoryService`, `DeleteOptions.DeleteFromExternalProvider`, `VirtualFolderInfo.Locations`).
 - **Custom Tabs regression** (`tests/client/customtabs-chunk.js`): Custom Tabs 0.2.10.0's transformation on the real 10.11.10 `home-html` chunk; the 1.0.0.0 tab → `SyntaxError`, the current snippet → valid page.
 - **Headless Chromium smoke tests** (mock jellyfin-web):
+  - **new in 1.1.0.0:** the shared browser in the voting overlay (grid/list switch, filters and sorts sent to the server, drive bars, "Never watched", lazy loading), the admin hand-pick browser (presets, select all in filter, tray totals per drive), the deadline picker (chips, flexible row with the time box hidden for hours, exact fallback, server description, remembered choice), target fields, templates, approval alerts with Approve/Reject, Storage and History tabs, new settings, results with sizes and request links;
   - **new:** the vote-results banner stays closed after ✕, a home re-render, a fresh status, and a failing dismiss call (this test fails on the 1.0.1.0 script); a re-rendered Vote tab is filled again;
   - **new (admin page):** instance editor (add an Anime Sonarr, masked key kept, test uses the saved key), removable badges and filter in the preview, unmanaged titles left out of delete votes, safety maximum shown, read-only Sonarr/Radarr status card, result wording (verbatim errors, manual-removal list, files still on disk, Retry, no pre-flight wording);
   - from 1.0.1.0: preview mode and "disabled" render nothing, `client.js` 404/500 harmless, late mounts filled, independent admin sections with Retry, the full user picker, Go live, the snippet card.
 
 **Not tested, because it needs your live server, instances or devices:**
+- **1.1.0.0:** drive detection and usage on your real ZimaOS drives (`/LM1`, `/LM2`, `/Media`); the browser's speed on your full library; the picker and browser on real phones; the approval flow and auto-approve timer on a running server; recurring drafts firing on a running server; Jellyseerr "Request it again" links on your Jellyseerr. There is also no automated test of `DriveService` itself (it reads the real `/proc/self/mountinfo` and `statvfs`); its parts (parsing, grouping, maths) are tested.
 - Real Sonarr, Radarr and Jellyseerr: the actual delete, how long their background file delete takes on your drives, recycle-bin behaviour, the root-folder free space they report.
 - Jellyfin 10.11.10 forgetting the removed title (`DeleteItem` with `DeleteFileLocation = false`) and the library refresh request.
-- Installing 1.0.2.0 and the start-up task on Jellyfin 10.11.10; `OnUninstalling` being called.
+- Installing 1.0.2.0 / 1.1.0.0 and the start-up task on Jellyfin 10.11.10; `OnUninstalling` being called.
 - The real jellyfin-web DOM with Media Bar, Home Screen Sections, Jellyfin Enhanced and Custom Tabs; official iOS/Android apps and Jellyfin Desktop; Discord webhooks.
 
 ---
@@ -575,7 +670,7 @@ Media Vote is **purely additive and order-independent**:
 Do these **in order**. The first steps are the safest. Stop at the first problem: create the `DISABLE` file and report it.
 
 1. **If you had 1.0.0.0:** delete its Vote tab in *Custom Tabs* and Save. Check that the home page is normal for you and for a non-admin.
-2. **Install / update** to 1.0.2.0 from the repository and restart Jellyfin. Check that the home page, Media Bar, HSS, Jellyfin Enhanced and Custom Tabs still look and work exactly as before, for both an admin and a non-admin.
+2. **Install / update** to 1.1.0.0 from the repository and restart Jellyfin. Check that the home page, Media Bar, HSS, Jellyfin Enhanced and Custom Tabs still look and work exactly as before, for both an admin and a non-admin.
 3. **Status & setup:** every self-check line is OK (Users shows your real user count; "Media folders" may say *not writable by Jellyfin — expected and fine*). *Preview mode is ON* on a fresh install (an update from 1.0.1.0 keeps your choice). The Custom Tabs check shows no warnings (after step 1).
 4. **Kill switch:** run `touch /DATA/AppData/jellyfin/config/data/mediavote/DISABLE` and restart. Check:
    - the Status tab shows "Disabled by file";
@@ -599,10 +694,15 @@ Do these **in order**. The first steps are the safest. Stop at the first problem
     - other titles in the same library are untouched.
 
     If it says *FILES STILL ON DISK* after an hour, check Sonarr/Radarr's log (*System → Logs*).
-11. **Go live**, after the in-page confirmation. Non-admins now see the enabled entry points (ask them to close and reopen the app). Check on iPhone, iPad, Android, a desktop browser and Jellyfin Desktop: banner position, voting, the overlay and the keyboard; Jellyfin Enhanced shortcuts don't fire while typing in Media Vote.
-12. **Vote tab (optional):** add the exact snippet in Custom Tabs, tick the setting, reload. The home page still loads, and the tab shows the voting screen or "No active vote right now".
-13. **Back to preview** hides everything from non-admins again.
-14. **Uninstall test (optional):** uninstall from the dashboard and restart. The banner, sidebar page and script disappear, and the home page and other plugins are fine.
+11. **1.1.0.0: drives.** *Settings → Drives* lists **8TB 1** (`/LM1`), **8TB 2** (`/LM2`) and **System drive** (`/Media`) with no "SAME filesystem" warning. On the *Storage* tab, compare each drive's used/free/total with ZimaOS's storage page or `df -h /LM1 /LM2 /Media` inside the container (`docker exec jellyfin df -h /LM1 /LM2 /Media`): they should match to within a GB or so. Rename one drive, save, and check the new name appears on title cards.
+12. **1.1.0.0: deadline picker** on a desktop browser **and on a phone**: try every quick choice and the flexible row; check the plain-words line (for a vote created before 25 Oct, "in 7 days at 20:00" should say **GMT** if it lands after the clock change). Reload: your last choice is pre-selected.
+13. **1.1.0.0: browser.** As admin, *New vote → Hand-picked titles*: switch grid/list, try each preset and a few filters/sorts, **Select all in this filter**, and check the tray's per-drive totals. As a voter (in preview, yourself), open the overlay and check cards show size, drive bar, last played (or *Never watched*), plays and date added. Set *Watch details voters see* to *counts only*, reload as a non-admin later after Go live: no names or times, and no "not watched in X months" filter.
+14. **1.1.0.0: approval flow** with one harmless title (as in steps 9–10): create a *Delete via Sonarr/Radarr* vote with N = 1, close it. The *Votes* tab shows "waiting for your approval"; **Details** lists the exact Sonarr/Radarr entry; the title is still in Sonarr/Radarr and on disk. **Reject** once on a first vote (nothing removed, `removal_rejected` in the audit log), then repeat with a second vote and **Approve**: the removal runs as in step 10.
+15. **1.1.0.0: results** show each title's size and the total freed; with *Public Jellyseerr address* set, removed titles have a working **Request it again** link.
+16. **Go live**, after the in-page confirmation. Non-admins now see the enabled entry points (ask them to close and reopen the app). Check on iPhone, iPad, Android, a desktop browser and Jellyfin Desktop: banner position, voting, the overlay and the keyboard; Jellyfin Enhanced shortcuts don't fire while typing in Media Vote.
+17. **Vote tab (optional):** add the exact snippet in Custom Tabs, tick the setting, reload. The home page still loads, and the tab shows the voting screen or "No active vote right now".
+18. **Back to preview** hides everything from non-admins again.
+19. **Uninstall test (optional):** uninstall from the dashboard and restart. The banner, sidebar page and script disappear, and the home page and other plugins are fine.
 
 ---
 
@@ -615,7 +715,7 @@ All routes are relative to the server base URL, and responses are camelCase JSON
 | Method & route | Purpose |
 |---|---|
 | `GET /MediaVote/Status` | Active vote summary for this user, last result, entry points, plus `preview`, `hidden` and `disabled` flags. |
-| `GET /MediaVote/Items?…` | Paged votable titles. |
+| `GET /MediaVote/Items?…` | Paged votable titles with facets (libraries, genres, drives). Query: `search`, `type`, `library`, `drive`, `genre`, `watched` (`never`·`notsince`·`mine`·`notmine`), `months`, `addedBeforeMonths`, `halfFinished`, `minGb`, `maxGb`, `minYear`, `maxYear`, `sort` (`name`·`votes`·`size`·`added`·`year`·`drive`·`lastplayed`·`playcount`·`never`), `descending`, `mineOnly`, `page`, `pageSize` (max 100). |
 | `POST /MediaVote/Vote` · `Unvote` · `Move` | Cast, withdraw or move a vote. |
 | `POST /MediaVote/Results/{id}/Dismiss` | Hide the result banner (the client also remembers it locally, so it never comes back). |
 
@@ -625,8 +725,9 @@ All routes are relative to the server base URL, and responses are camelCase JSON
 
 | Method | Routes |
 |---|---|
-| GET | `Overview` (includes self-check, kill switch, preview, entry points, Custom Tabs findings and snippet, maximum titles per vote), `Users`, `Libraries`, `Search` (with `removable`), `Sessions/{id}`, `Sessions/{id}/Csv`, `Audit`, `Settings`, `ArrStatus` (read-only state of every Sonarr/Radarr/Jellyseerr instance) |
-| POST | `Preview` (with removability counts), `Sessions`, `Sessions/{id}/Extend`, `/Close`, `/Cancel`, `/DryRun`, `/BreakTie`, `/Retry`, `/ResolveAnyway`, `Settings` (with `arrInstances`), `Test/{Radarr\|Sonarr\|Jellyseerr}` (`{ id, url, apiKey }`, read-only), `SelfCheck`, `Visibility` (`{ "previewOnly": false }` = Go live), `Reapply` |
+| GET | `Overview` (includes self-check, kill switch, preview, entry points, Custom Tabs findings and snippet, maximum titles per vote, votes awaiting approval, pending recurring drafts), `Users`, `Libraries`, `Search` (with `removable`), `Browse` and `Browse/Ids` (the admin browser; same query as `Items` plus `removableOnly`), `Drives`, `Storage`, `Stats`, `Templates`, `Sessions/{id}`, `Sessions/{id}/Csv`, `Audit`, `Settings`, `ArrStatus` (read-only state of every Sonarr/Radarr/Jellyseerr instance) |
+| DELETE | `Templates/{id}` |
+| POST | `Deadline` (`{ kind, preset, amount, unit, time, local }` → UTC time and plain-words description; `Sessions` and `Extend` accept the same `deadline` object), `Preview` (with removability counts), `Sessions`, `Sessions/{id}/Extend`, `/Close`, `/Cancel`, `/DryRun`, `/BreakTie`, `/Retry`, `/ResolveAnyway`, `/Approve`, `/Reject`, `Templates` (create or update), `Templates/{id}/Skip`, `Settings` (with `arrInstances`), `Test/{Radarr\|Sonarr\|Jellyseerr}` (`{ id, url, apiKey }`, read-only), `SelfCheck`, `Visibility` (`{ "previewOnly": false }` = Go live), `Reapply` |
 
 ---
 
@@ -634,10 +735,11 @@ All routes are relative to the server base URL, and responses are camelCase JSON
 
 ```
 src/Jellyfin.Plugin.MediaVote/
-  Core/           pure logic: rules, tallies, executor, access rules, self-check runner, Custom Tabs inspector, error text
-  Storage/        JSON vote store and audit log
+  Core/           pure logic: rules, tallies, winner planner (tie rules, targets), executor, deadline calculator, drives
+                  (mount table, grouping, maths), browse engine, templates, statistics, access rules, self-check, error text
+  Storage/        JSON vote store, template store and audit log
   Integrations/   Radarr/Sonarr/Jellyseerr clients, webhook
-  Services/       Jellyfin adapters, kill switch, API self-check, deadline timer, scheduled tasks
+  Services/       Jellyfin adapters, drive service, kill switch, API self-check, deadline timer, scheduled tasks
   Web/            File Transformation callback, entry points (Plugin Pages, HSS), Custom Tabs read-only check
   Api/            REST controllers and error filter
   Assets/         client.js, client.css, page.html, standalone.html
@@ -669,6 +771,9 @@ The release workflow also runs the version check and the binary check before pub
 
 ### Publishing a release
 
+Releases are stacked: **1.0.2.0 first, then 1.1.0.0.** Each tag publishes one version; `manifest.json` keeps every published version, so Jellyfin offers the newest one that fits the server.
+
+**1.0.2.0** (if not already done):
 1. Merge the 1.0.2.0 PR into `main`.
 2. Tag and push:
    ```sh
@@ -676,12 +781,22 @@ The release workflow also runs the version check and the binary check before pub
    git tag -a v1.0.2.0 -m "Media Vote 1.0.2.0: delete only through Sonarr/Radarr; result banner fix"
    git push origin v1.0.2.0
    ```
+3. Wait for the *Release* workflow to go green (Actions tab). `manifest.json` on `main` now lists 1.0.2.0.
+
+**1.1.0.0:**
+1. After 1.0.2.0 is merged, the 1.1.0.0 PR retargets to `main` by itself (if GitHub doesn't, change its base to `main`). Pull `main` into it if GitHub reports a conflict (for example in `manifest.json`, which the 1.0.2.0 release changed; keep `main`'s version), let CI go green, then merge.
+2. Tag and push:
+   ```sh
+   git fetch origin && git checkout main && git pull
+   git tag -a v1.1.0.0 -m "Media Vote 1.1.0.0: shared media browser, deadline picker, drives, approval step, templates"
+   git push origin v1.1.0.0
+   ```
 3. `.github/workflows/release.yml` then:
    - checks versions, tests and runs the binary check;
-   - builds `media-vote_1.0.2.0.zip`;
+   - builds `media-vote_1.1.0.0.zip`;
    - creates the GitHub Release (notes from the tag message; for a lightweight tag, from the `build.yaml` changelog);
-   - adds 1.0.2.0 (`targetAbi 10.11.10.0`, MD5 checksum) to `manifest.json` on `main`, next to 1.0.1.0.
-4. Check the Actions tab. When it is green, Jellyfin offers 1.0.2.0 as an update.
+   - adds 1.1.0.0 (`targetAbi 10.11.10.0`, MD5 checksum) to `manifest.json` on `main`, next to the earlier versions.
+4. Check the Actions tab. When it is green, Jellyfin offers 1.1.0.0 as an update (*Dashboard → Plugins*, then restart). Work through the 1.1.0.0 steps of the [manual test checklist](#manual-test-checklist).
 
 ---
 

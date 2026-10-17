@@ -69,6 +69,9 @@ public sealed class BrowseContext
     /// <summary>False when watch details are hidden from this viewer: watch filters and sorts are then ignored, so nothing leaks.</summary>
     public bool WatchFiltersAllowed { get; set; } = true;
 
+    /// <summary>False when voters see counts only: "not watched since" and "last played" would reveal when titles were watched.</summary>
+    public bool WatchTimesAllowed { get; set; } = true;
+
     /// <summary>Vote score per item (null outside a vote, or when tallies are hidden).</summary>
     public Func<Guid, int>? Score { get; set; }
 
@@ -161,7 +164,7 @@ public static class BrowseEngine
                 case "never":
                     items = items.Where(NeverWatched);
                     break;
-                case "notsince":
+                case "notsince" when ctx.WatchTimesAllowed:
                     var since = ctx.NowUtc.AddMonths(-Math.Max(1, q.Months));
                     items = items.Where(c => c.LastPlayedUtc is null || c.LastPlayedUtc < since);
                     break;
@@ -192,7 +195,7 @@ public static class BrowseEngine
     {
         string sort = (q.Sort ?? "name").ToLowerInvariant();
         bool desc = q.Descending;
-        if ((sort == "votes" && ctx.Score is null) || (!ctx.WatchFiltersAllowed && sort is "lastplayed" or "playcount" or "never"))
+        if ((sort == "votes" && ctx.Score is null) || (!ctx.WatchFiltersAllowed && sort is "lastplayed" or "playcount" or "never") || (!ctx.WatchTimesAllowed && sort == "lastplayed"))
         {
             sort = "name"; // cannot sort by hidden data: plain A–Z, so the order reveals nothing
             desc = false;
@@ -399,6 +402,7 @@ public static class ViewBuilder
             ViewerId = viewerId,
             NowUtc = nowUtc ?? DateTime.UtcNow,
             WatchFiltersAllowed = watch != "Hidden",
+            WatchTimesAllowed = watch == "NamesAndTime",
             Score = showTallies ? id => tallies.TryGetValue(id, out var t) ? t.Score : 0 : null,
             MyVoteItems = myVotes.Select(v => v.ItemId).ToHashSet(),
             DriveName = DriveNames(drives)

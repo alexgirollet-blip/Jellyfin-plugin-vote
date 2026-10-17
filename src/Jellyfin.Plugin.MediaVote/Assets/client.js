@@ -495,7 +495,8 @@
 
         function sortOptions() {
             var o = [['name', 'Name'], ['size', 'Size'], ['added', 'Date added'], ['year', 'Year']];
-            if (state.watch !== 'Hidden') { o.push(['lastplayed', 'Last played'], ['playcount', 'Play count'], ['never', 'Never watched first']); }
+            if (state.watch === 'NamesAndTime') { o.push(['lastplayed', 'Last played']); }
+            if (state.watch !== 'Hidden') { o.push(['playcount', 'Play count'], ['never', 'Never watched first']); }
             o.push(['drive', 'Drive']);
             if (cfg.votesSortable) { o.splice(1, 0, ['votes', 'Votes']); }
             return o;
@@ -547,6 +548,7 @@
             if (state.watch !== 'Hidden') {
                 var w = el('select', { className: 'mediavote-input', 'aria-label': 'Watched' });
                 [['', 'Watched or not'], ['never', 'Never watched'], ['notsince:6', 'Not watched in 6 months'], ['notsince:12', 'Not watched in 12 months'], ['notsince:24', 'Not watched in 2 years'], ['mine', 'Watched by me'], ['notmine', 'Not watched by me']]
+                    .filter(function (o) { return state.watch === 'NamesAndTime' || o[0].indexOf('notsince') !== 0; })
                     .forEach(function (o) { w.appendChild(el('option', { value: o[0], text: o[1] })); });
                 w.value = state.q.watched === 'notsince' ? 'notsince:' + state.q.months : state.q.watched;
                 if (w.selectedIndex < 0) { w.value = ''; }

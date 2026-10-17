@@ -102,6 +102,7 @@ function check(cond, msg) {
             }
             if (p === '/MediaVote/Items') {
                 state.itemsCalls = (state.itemsCalls || 0) + 1;
+                (state.itemQueries = state.itemQueries || []).push(url.searchParams);
                 const pageNo = Number(url.searchParams.get('page') || 0);
                 const size = Number(url.searchParams.get('pageSize') || 30);
                 return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ total: items.length, page: pageNo, pageSize: size, genres: ['Drama'], items: items.slice(pageNo * size, pageNo * size + size) }) });
@@ -199,6 +200,17 @@ function check(cond, msg) {
     check(await page.evaluate(() => /Never watched/.test(document.querySelector('#mediavote-overlay .mediavote-card[data-id="item-2"]').textContent)), '"Never watched" badge');
     check(await page.evaluate(() => !!document.querySelector('#mediavote-overlay .mediavote-filters summary')), 'filters panel available to voters');
     check(await page.evaluate(() => Array.prototype.every.call(document.querySelectorAll('#mediavote-overlay .mediavote-toolbar button, #mediavote-overlay .mediavote-filters summary'), b => b.getBoundingClientRect().height >= 43)), 'toolbar controls are at least 44px tall');
+    // Sorting on the server, grid/list switch and lazy loading in the voting view.
+    state.itemQueries = [];
+    await page.selectOption('#mediavote-overlay select[aria-label="Sort by"]', 'size');
+    await page.waitForTimeout(500);
+    check(state.itemQueries.some(q => q.get('sort') === 'size' && q.get('page') === '0'), 'voting view: sorting runs on the server (sort sent, back to the first page)');
+    const wasList = await page.evaluate(() => document.querySelector('#mediavote-overlay .mediavote-grid').classList.contains('mediavote-list'));
+    await page.click('#mediavote-overlay .mediavote-toolbar-row button:has-text("view")');
+    check(await page.evaluate(() => document.querySelector('#mediavote-overlay .mediavote-grid').classList.contains('mediavote-list')) === !wasList, 'voting view: grid/list switch');
+    await page.evaluate(() => document.querySelector('#mediavote-overlay .mediavote-sentinel').scrollIntoView());
+    await page.waitForFunction(() => document.querySelectorAll('#mediavote-overlay .mediavote-card').length === 45, null, { timeout: 3000 }).catch(() => {});
+    check(await page.evaluate(() => document.querySelectorAll('#mediavote-overlay .mediavote-card').length) === 45 && state.itemQueries.some(q => q.get('page') === '1'), 'voting view: more titles load on scroll (second page fetched)');
     await page.keyboard.press('Escape');
     await page.waitForTimeout(200);
     check(errors.length === 0, 'no console errors (desktop): ' + errors.join(' | '));
