@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
@@ -34,12 +35,14 @@ public sealed class MediaVoteController : MediaVoteControllerBase
     private readonly VoteService _votes;
     private readonly JellyfinUserDirectory _users;
     private readonly LibraryCatalog _catalog;
+    private readonly DriveService _drives;
 
-    public MediaVoteController(VoteService votes, JellyfinUserDirectory users, LibraryCatalog catalog)
+    public MediaVoteController(VoteService votes, JellyfinUserDirectory users, LibraryCatalog catalog, DriveService drives)
     {
         _votes = votes;
         _users = users;
         _catalog = catalog;
+        _drives = drives;
     }
 
     private static PluginConfiguration Config => Plugin.Instance?.Configuration ?? new PluginConfiguration();
@@ -170,7 +173,7 @@ public sealed class MediaVoteController : MediaVoteControllerBase
 
     [HttpGet("Items")]
     [Authorize]
-    public ActionResult Items([FromQuery] string? search, [FromQuery] string? type, [FromQuery] string? genre, [FromQuery] string? sort, [FromQuery] bool desc = false, [FromQuery] bool mine = false, [FromQuery] int page = 0, [FromQuery] int pageSize = 30)
+    public ActionResult Items([FromQuery] ItemQuery q, [FromQuery] bool desc = false, [FromQuery] bool mine = false)
     {
         var userId = CurrentUserId;
         bool isAdmin = _users.IsAdministrator(userId);
@@ -192,12 +195,12 @@ public sealed class MediaVoteController : MediaVoteControllerBase
         }
 
         var visible = _catalog.GetVisibleIds(session.Id, userId, session.Candidates.Select(c => c.ItemId).ToList());
-        var result = ViewBuilder.BuildPage(
-            session,
-            userId,
-            isAdmin,
-            new ItemQuery { Search = Limit(search, 100), Type = type, Genre = Limit(genre, 100), Sort = sort, Descending = desc, MineOnly = mine, Page = page, PageSize = pageSize },
-            visible.Contains);
+        q ??= new ItemQuery();
+        q.Search = Limit(q.Search, 100);
+        q.Genre = Limit(q.Genre, 100);
+        q.Descending |= desc;
+        q.MineOnly |= mine;
+        var result = ViewBuilder.BuildPage(session, userId, isAdmin, q, visible.Contains, SafeDrives(), Config.WatchDetailsForVoters.ToString(), _votes.Clock.UtcNow);
         return Json(result);
     }
 
@@ -242,6 +245,20 @@ public sealed class MediaVoteController : MediaVoteControllerBase
         ItemOutcomeStatus.Reported => "kept",
         _ => "pending"
     };
+
+    private IReadOnlyList<DriveStat> SafeDrives()
+    {
+        try
+        {
+            return _drives.GetDrives();
+        }
+#pragma warning disable CA1031 // drive bars are informational
+        catch (Exception)
+#pragma warning restore CA1031
+        {
+            return Array.Empty<DriveStat>();
+        }
+    }
 
     /// <summary>Server-side enforcement of the kill switch and of preview mode (admins only).</summary>
     private ActionResult? Blocked(bool isAdmin)

@@ -38,8 +38,11 @@ public sealed class LibraryCatalog
     private readonly object _scopeLock = new();
     private (DateTime At, List<CandidateItem> Items)? _scopeCache;
 
-    public LibraryCatalog(ILibraryManager libraryManager, IUserManager userManager, IUserDataManager userDataManager, IApplicationPaths paths, ILogger<LibraryCatalog> logger)
+    private readonly DriveService? _drives;
+
+    public LibraryCatalog(ILibraryManager libraryManager, IUserManager userManager, IUserDataManager userDataManager, IApplicationPaths paths, ILogger<LibraryCatalog> logger, DriveService? drives = null)
     {
+        _drives = drives;
         _libraryManager = libraryManager;
         _userManager = userManager;
         _userDataManager = userDataManager;
@@ -113,15 +116,43 @@ public sealed class LibraryCatalog
             }
         }
 
-        // Series size and episode->series map from one episode query.
+        // Series size, episode count, per-drive bytes and the episode->series map from one episode query.
         var seriesSize = new Dictionary<Guid, long>();
+        var seriesEpisodes = new Dictionary<Guid, int>();
+        var seriesDrives = new Dictionary<Guid, Dictionary<string, long>>();
         var episodeToSeries = new Dictionary<Guid, Guid>();
+        string? DriveOf(string? path)
+        {
+            try
+            {
+                return _drives?.KeyFor(path);
+            }
+#pragma warning disable CA1031 // drive info is informational
+            catch (Exception)
+#pragma warning restore CA1031
+            {
+                return null;
+            }
+        }
+
         if (items.Values.Any(v => v.Item is Series))
         {
             foreach (var ep in JellyfinCall.Run("read episodes", () => _libraryManager.GetItemList(new InternalItemsQuery { IncludeItemTypes = new[] { BaseItemKind.Episode }, Recursive = true, IsVirtualItem = false })).OfType<Episode>())
             {
                 episodeToSeries[ep.Id] = ep.SeriesId;
-                seriesSize[ep.SeriesId] = seriesSize.GetValueOrDefault(ep.SeriesId) + (ep.Size ?? 0);
+                long size = ep.Size ?? 0;
+                seriesSize[ep.SeriesId] = seriesSize.GetValueOrDefault(ep.SeriesId) + size;
+                seriesEpisodes[ep.SeriesId] = seriesEpisodes.GetValueOrDefault(ep.SeriesId) + 1;
+                if (DriveOf(ep.Path) is { } key)
+                {
+                    if (!seriesDrives.TryGetValue(ep.SeriesId, out var d))
+                    {
+                        d = new Dictionary<string, long>(StringComparer.Ordinal);
+                        seriesDrives[ep.SeriesId] = d;
+                    }
+
+                    d[key] = d.GetValueOrDefault(key) + size;
+                }
             }
         }
 
@@ -130,18 +161,28 @@ public sealed class LibraryCatalog
         {
             stats.TryGetValue(v.Item.Id, out var st);
             var image = v.Item.GetImageInfo(ImageType.Primary, 0);
+            bool isSeries = v.Item is Series;
+            long itemSize = isSeries ? seriesSize.GetValueOrDefault(v.Item.Id) : v.Item.Size ?? 0;
+            var driveBytes = isSeries
+                ? seriesDrives.GetValueOrDefault(v.Item.Id) ?? new Dictionary<string, long>(StringComparer.Ordinal)
+                : (DriveOf(v.Item.Path) is { } mk ? new Dictionary<string, long>(StringComparer.Ordinal) { [mk] = itemSize } : new Dictionary<string, long>(StringComparer.Ordinal));
             return new CandidateItem
             {
+                LastPlayedBy = st?.LastBy,
+                ViewerIds = st?.Viewers.ToList() ?? new List<Guid>(),
+                EpisodeCount = isSeries ? seriesEpisodes.GetValueOrDefault(v.Item.Id) : 0,
+                PlayedEpisodeCount = isSeries ? st?.PlayedEpisodes.Count ?? 0 : 0,
+                DriveBytes = driveBytes,
                 ItemId = v.Item.Id,
                 Name = v.Item.Name ?? "?",
                 Year = v.Item.ProductionYear,
                 Kind = v.Item is Series ? MediaKind.Series : MediaKind.Movie,
                 LibraryId = v.Lib.Id,
                 LibraryName = v.Lib.Name,
-                SizeBytes = v.Item is Series ? seriesSize.GetValueOrDefault(v.Item.Id) : v.Item.Size ?? 0,
+                SizeBytes = itemSize,
                 DateAddedUtc = v.Item.DateCreated,
-                LastPlayedUtc = st.Last,
-                PlayCount = st.Count,
+                LastPlayedUtc = st?.Last,
+                PlayCount = st?.Count ?? 0,
                 Genres = (v.Item.Genres ?? Array.Empty<string>()).ToList(),
                 PrimaryImageTag = image is null ? null : image.DateModified.Ticks.ToString("x", CultureInfo.InvariantCulture),
                 Path = v.Item.Path,
@@ -236,31 +277,57 @@ public sealed class LibraryCatalog
     private static string NormalizeId(string? id)
         => Guid.TryParse(id, out var g) ? g.ToString("N", CultureInfo.InvariantCulture) : id ?? string.Empty;
 
-    private Dictionary<Guid, (int Count, DateTime? Last)> ReadPlayStats(Dictionary<Guid, Guid> episodeToSeries)
+    /// <summary>Play statistics per movie/series (episodes are counted towards their series).</summary>
+    internal sealed class ItemStats
     {
-        var stats = new Dictionary<Guid, (int Count, DateTime? Last)>();
+        public int Count { get; set; }
 
-        void Add(Guid id, int count, DateTime? last)
+        public DateTime? Last { get; set; }
+
+        public string? LastBy { get; set; }
+
+        public HashSet<Guid> Viewers { get; } = new();
+
+        public HashSet<Guid> PlayedEpisodes { get; } = new();
+    }
+
+    private Dictionary<Guid, ItemStats> ReadPlayStats(Dictionary<Guid, Guid> episodeToSeries)
+    {
+        var stats = new Dictionary<Guid, ItemStats>();
+        ItemStats For(Guid id)
         {
-            if (episodeToSeries.TryGetValue(id, out var seriesId))
+            if (!stats.TryGetValue(id, out var st))
             {
-                id = seriesId;
+                st = new ItemStats();
+                stats[id] = st;
             }
 
-            var cur = stats.GetValueOrDefault(id);
-            stats[id] = (cur.Count + count, Max(cur.Last, last));
+            return st;
         }
 
-        // Primary source: Jellyfin's own per-user data.
+        // Primary source: Jellyfin's own per-user data (knows who played what).
         foreach (var user in JellyfinCall.Run("list users", () => _userManager.GetUsers().ToList()))
         {
             foreach (var (id, count, last) in PlayedItemsFor(user))
             {
-                Add(id, count, last);
+                bool isEpisode = episodeToSeries.TryGetValue(id, out var seriesId);
+                var st = For(isEpisode ? seriesId : id);
+                st.Count += count;
+                st.Viewers.Add(user.Id);
+                if (isEpisode)
+                {
+                    st.PlayedEpisodes.Add(id);
+                }
+
+                if (last is not null && (st.Last is null || last > st.Last))
+                {
+                    st.Last = last;
+                    st.LastBy = user.Username;
+                }
             }
         }
 
-        // Optional: Playback Reporting. Take the higher count and the latest date.
+        // Optional: Playback Reporting. Take the higher count and the latest date (no user name from there).
         if (Config.UsePlaybackReporting)
         {
             var reporting = new PlaybackReportingReader(_paths.DataPath, _logger).Read();
@@ -274,8 +341,13 @@ public sealed class LibraryCatalog
 
             foreach (var (id, val) in merged)
             {
-                var cur = stats.GetValueOrDefault(id);
-                stats[id] = (Math.Max(cur.Count, val.Count), Max(cur.Last, val.Last));
+                var st = For(id);
+                st.Count = Math.Max(st.Count, val.Count);
+                if (val.Last is not null && (st.Last is null || val.Last > st.Last))
+                {
+                    st.Last = val.Last;
+                    st.LastBy = null;
+                }
             }
         }
 

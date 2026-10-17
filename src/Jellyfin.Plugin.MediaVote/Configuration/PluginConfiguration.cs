@@ -37,6 +37,27 @@ public enum SeerrAction
     RemoveMediaRecord = 1
 }
 
+/// <summary>A friendly name for a drive, keyed by one of its mount points (for example "/LM1" = "8TB 1").</summary>
+public class DriveNameConfig
+{
+    public string MountPoint { get; set; } = string.Empty;
+
+    public string Name { get; set; } = string.Empty;
+}
+
+/// <summary>Watch details voters may see on title cards.</summary>
+public enum WatchVisibility
+{
+    /// <summary>Who played it last and when, play count and viewers (default).</summary>
+    NamesAndTime = 0,
+
+    /// <summary>Play count and number of viewers only.</summary>
+    CountsOnly = 1,
+
+    /// <summary>Nothing about watching.</summary>
+    Hidden = 2
+}
+
 /// <summary>Webhook payload style.</summary>
 public enum WebhookKind
 {
@@ -119,6 +140,20 @@ public class PluginConfiguration : BasePluginConfiguration
 
     /// <summary>Most titles one vote may remove through Sonarr/Radarr (safety cap, 1–100).</summary>
     public int MaxRemovalsPerVote { get; set; } = 5;
+
+    // ---------------- drives and title cards ----------------
+
+    /// <summary>Friendly drive names set by the admin. Unnamed drives use the defaults (/LM1 = "8TB 1", /LM2 = "8TB 2", /Media = "System drive") or their mount point.</summary>
+    public DriveNameConfig[] DriveNames { get; set; } = Array.Empty<DriveNameConfig>();
+
+    /// <summary>Drive bar turns amber above this percentage.</summary>
+    public int DriveWarnPercent { get; set; } = 85;
+
+    /// <summary>Drive bar turns red above this percentage.</summary>
+    public int DriveCriticalPercent { get; set; } = 95;
+
+    /// <summary>Watch details voters see on title cards (admins always see everything).</summary>
+    public WatchVisibility WatchDetailsForVoters { get; set; } = WatchVisibility.NamesAndTime;
 
     /// <summary>1.0.x single-instance fields, read only to migrate them into <see cref="ArrInstances"/>, then cleared.</summary>
     public string RadarrUrl { get; set; } = string.Empty;
@@ -227,6 +262,9 @@ public class PluginConfiguration : BasePluginConfiguration
         ProtectedLibraryIds ??= Array.Empty<string>();
         ArrInstances = (ArrInstances ?? Array.Empty<ArrInstanceConfig>()).Where(i => i is not null).ToArray();
         MaxRemovalsPerVote = Math.Clamp(MaxRemovalsPerVote, 1, 100);
+        DriveNames = (DriveNames ?? Array.Empty<DriveNameConfig>()).Where(d => d is not null && !string.IsNullOrWhiteSpace(d.MountPoint)).ToArray();
+        DriveWarnPercent = Math.Clamp(DriveWarnPercent, 1, 99);
+        DriveCriticalPercent = Math.Clamp(DriveCriticalPercent, DriveWarnPercent, 100);
         return changed;
     }
 }

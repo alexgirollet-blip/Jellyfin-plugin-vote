@@ -188,6 +188,21 @@ public sealed class CandidateItem
 
     public Dictionary<string, string> ProviderIds { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>Name of the user who played it most recently (Jellyfin user data), if known.</summary>
+    public string? LastPlayedBy { get; set; }
+
+    /// <summary>Users who have played it (any episode, for a series).</summary>
+    public List<Guid> ViewerIds { get; set; } = new();
+
+    /// <summary>Series only: number of episodes on disk.</summary>
+    public int EpisodeCount { get; set; }
+
+    /// <summary>Series only: episodes that at least one user has played.</summary>
+    public int PlayedEpisodeCount { get; set; }
+
+    /// <summary>Bytes on each drive (key = the drive's mount point, see <see cref="DriveStat.Key"/>). A series can span drives.</summary>
+    public Dictionary<string, long> DriveBytes { get; set; } = new(StringComparer.Ordinal);
+
     /// <summary>True when exactly one Sonarr/Radarr entry manages it, false when none does, null when unknown (checked read-only when the vote is built).</summary>
     public bool? Removable { get; set; }
 

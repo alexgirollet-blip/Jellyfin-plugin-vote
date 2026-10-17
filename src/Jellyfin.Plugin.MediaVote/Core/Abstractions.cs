@@ -96,6 +96,12 @@ public interface IRemovalBackend
     Task<List<ExternalStepResult>> SeerrAsync(MatchKey key, bool execute, CancellationToken cancellationToken);
 }
 
+/// <summary>Drive usage, cached for about a minute. Never throws: an unreadable drive is reported as not <see cref="DriveStat.Known"/>.</summary>
+public interface IDriveStats
+{
+    IReadOnlyList<DriveStat> GetDrives();
+}
+
 /// <summary>Audit log sink. Every vote and every deletion action is written here.</summary>
 public interface IAuditLog
 {

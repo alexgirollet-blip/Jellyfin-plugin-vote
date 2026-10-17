@@ -20,17 +20,24 @@ using Microsoft.AspNetCore.Mvc;
 
 namespace Jellyfin.Plugin.MediaVote.Api;
 
-/// <summary>Create-vote request: settings plus the deadline as local wall-clock text ("yyyy-MM-ddTHH:mm").</summary>
+/// <summary>
+/// Create-vote request: settings plus the deadline, either as a picker choice (<see cref="Deadline"/>, preferred)
+/// or as local wall-clock text ("yyyy-MM-ddTHH:mm"). The server always does the time zone maths.
+/// </summary>
 public sealed class CreateSessionRequest
 {
     public SessionSettings Settings { get; set; } = new();
 
+    public DeadlineSpec? Deadline { get; set; }
+
     public string DeadlineLocal { get; set; } = string.Empty;
 }
 
-/// <summary>Extend request.</summary>
+/// <summary>Extend request (same deadline forms as <see cref="CreateSessionRequest"/>).</summary>
 public sealed class ExtendRequest
 {
+    public DeadlineSpec? Deadline { get; set; }
+
     public string DeadlineLocal { get; set; } = string.Empty;
 }
 
@@ -149,6 +156,7 @@ public sealed class MediaVoteAdminController : MediaVoteControllerBase
     private readonly ILibraryManager _library;
     private readonly ApiSelfCheck _selfCheck;
     private readonly ArrLibraryCache _arrCache;
+    private readonly DriveService _drives;
     private readonly Microsoft.Extensions.Logging.ILogger<MediaVoteAdminController> _logger;
 
     public MediaVoteAdminController(
@@ -163,9 +171,11 @@ public sealed class MediaVoteAdminController : MediaVoteControllerBase
         ILibraryManager library,
         ApiSelfCheck selfCheck,
         ArrLibraryCache arrCache,
+        DriveService drives,
         Microsoft.Extensions.Logging.ILogger<MediaVoteAdminController> logger)
     {
         _arrCache = arrCache;
+        _drives = drives;
         _selfCheck = selfCheck;
         _logger = logger;
         _paths = paths;
@@ -260,6 +270,33 @@ public sealed class MediaVoteAdminController : MediaVoteControllerBase
         return Json(found.Select(c => new { id = c.ItemId, name = c.Name, year = c.Year, kind = c.Kind, path = c.Path, removable = c.Removable, removalNote = c.RemovalNote }));
     }
 
+    /// <summary>The shared media browser for hand-picking titles: filtered, sorted and paged on the server.</summary>
+    [HttpGet("Browse")]
+    public async Task<ActionResult> Browse([FromQuery] ItemQuery q)
+    {
+        var scope = await BrowseScopeAsync().ConfigureAwait(false);
+        return Json(ViewBuilder.BuildBrowsePage(scope, CurrentUserId, q ?? new ItemQuery(), SafeDrives(), _votes.Clock.UtcNow));
+    }
+
+    /// <summary>Every title matching the filter (for "select all in current filter"): id, size and bytes per drive.</summary>
+    [HttpGet("Browse/Ids")]
+    public async Task<ActionResult> BrowseIds([FromQuery] ItemQuery q)
+    {
+        var scope = await BrowseScopeAsync().ConfigureAwait(false);
+        var ctx = new BrowseContext { ViewerId = CurrentUserId, NowUtc = _votes.Clock.UtcNow };
+        var list = BrowseEngine.Apply(scope, q ?? new ItemQuery(), ctx).Take(10000).ToList();
+        return Json(new
+        {
+            count = list.Count,
+            totalBytes = list.Sum(c => c.SizeBytes),
+            items = list.Select(c => new { id = c.ItemId, name = c.Name, year = c.Year, kind = c.Kind, sizeBytes = c.SizeBytes, drives = c.DriveBytes, removable = c.Removable })
+        });
+    }
+
+    /// <summary>Detected drives with usage (read-only, cached about a minute).</summary>
+    [HttpGet("Drives")]
+    public ActionResult Drives() => Json(new { drives = SafeDrives().Select(DriveView.From), warnPercent = Config.DriveWarnPercent, criticalPercent = Config.DriveCriticalPercent });
+
     [HttpPost("Preview")]
     public async Task<ActionResult> Preview()
     {
@@ -308,7 +345,7 @@ public sealed class MediaVoteAdminController : MediaVoteControllerBase
             return Error(400, "bad_request", "Invalid request body.");
         }
 
-        var (deadline, err) = ParseLocal(req.DeadlineLocal);
+        var (deadline, err) = ResolveDeadline(req.Deadline, req.DeadlineLocal);
         if (deadline is null)
         {
             return Json(new { ok = false, errors = new[] { err } }, 400);
@@ -358,7 +395,7 @@ public sealed class MediaVoteAdminController : MediaVoteControllerBase
     public async Task<ActionResult> Extend([FromRoute] Guid id)
     {
         var req = await ReadBodyAsync<ExtendRequest>().ConfigureAwait(false);
-        var (deadline, err) = ParseLocal(req?.DeadlineLocal);
+        var (deadline, err) = ResolveDeadline(req?.Deadline, req?.DeadlineLocal);
         if (deadline is null)
         {
             return Error(400, "bad_deadline", err);
@@ -629,6 +666,32 @@ public sealed class MediaVoteAdminController : MediaVoteControllerBase
 
     // ------------------------------------------------------------------ helpers
 
+    /// <summary>All votable (unprotected) titles with removability, for the admin browser.</summary>
+    private async Task<List<CandidateItem>> BrowseScopeAsync()
+    {
+        var cfg = Config;
+        var prot = cfg.ProtectedItemIds.ToHashSet();
+        var protLibs = cfg.ProtectedLibraryIds.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var scope = _catalog.GetScopeCached(ScopeCacheAge).Where(c => !prot.Contains(c.ItemId) && !protLibs.Contains(c.LibraryId)).ToList();
+        Removability.Annotate(scope, await _arrCache.GetAsync(HttpContext.RequestAborted).ConfigureAwait(false));
+        return scope;
+    }
+
+    private IReadOnlyList<DriveStat> SafeDrives()
+    {
+        try
+        {
+            return _drives.GetDrives();
+        }
+#pragma warning disable CA1031 // drive bars are informational
+        catch (Exception ex)
+#pragma warning restore CA1031
+        {
+            Microsoft.Extensions.Logging.LoggerExtensions.LogWarning(_logger, ex, "Media Vote: drive detection failed");
+            return Array.Empty<DriveStat>();
+        }
+    }
+
     private string ProtectedName(Guid id)
     {
         try
@@ -655,6 +718,26 @@ public sealed class MediaVoteAdminController : MediaVoteControllerBase
 
     private static string LocalText(DateTime utc, TimeZoneInfo zone)
         => TimeZoneHelper.UtcToLocal(utc, zone).ToString("ddd d MMM yyyy HH:mm", CultureInfo.GetCultureInfo("en-GB"));
+
+    /// <summary>Plain-words preview of a deadline choice ("Closes Friday 24 Oct 2026 at 20:00 BST (in 7 days)").</summary>
+    [HttpPost("Deadline")]
+    public async Task<ActionResult> Deadline()
+    {
+        var spec = await ReadBodyAsync<DeadlineSpec>().ConfigureAwait(false);
+        var r = DeadlineCalculator.Compute(spec, _votes.Clock.UtcNow, Zone);
+        return Json(new { ok = r.Error is null, deadlineUtc = r.Utc, localInput = r.LocalInput, description = r.Description, error = r.Error });
+    }
+
+    private (DateTime? Utc, string? Error) ResolveDeadline(DeadlineSpec? spec, string? local)
+    {
+        if (spec is not null)
+        {
+            var r = DeadlineCalculator.Compute(spec, _votes.Clock.UtcNow, Zone);
+            return (r.Utc, r.Error);
+        }
+
+        return ParseLocal(local);
+    }
 
     private (DateTime? Utc, string? Error) ParseLocal(string? local)
     {

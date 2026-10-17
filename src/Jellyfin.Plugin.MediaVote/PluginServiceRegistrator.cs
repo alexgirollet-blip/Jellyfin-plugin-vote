@@ -31,6 +31,7 @@ public class PluginServiceRegistrator : IPluginServiceRegistrator
         serviceCollection.AddSingleton(sp => new FileAuditLog(DataDirectory(sp.GetRequiredService<IApplicationPaths>()), sp.GetRequiredService<IClock>()));
         serviceCollection.AddSingleton<JellyfinUserDirectory>();
         serviceCollection.AddSingleton<JellyfinMediaGateway>();
+        serviceCollection.AddSingleton<DriveService>();
         serviceCollection.AddSingleton<LibraryCatalog>();
         serviceCollection.AddSingleton(sp => new ExternalServiceFactory(sp.GetRequiredService<System.Net.Http.IHttpClientFactory>(), CurrentConfig));
         serviceCollection.AddSingleton(sp => new WebhookNotifier(
