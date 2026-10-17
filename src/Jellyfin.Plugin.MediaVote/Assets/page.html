@@ -1,1 +1,11 @@
-
+<div class="mediavote-page-host" data-mediavote-mount="page"></div>
+<script>
+    (function () {
+        if (window.MediaVote && window.MediaVote.scan) { window.MediaVote.scan(); return; }
+        if (document.getElementById('mediavote-loader')) { return; }
+        var s = document.createElement('script');
+        s.id = 'mediavote-loader';
+        s.src = window.ApiClient ? window.ApiClient.getUrl('MediaVote/client.js') : '../MediaVote/client.js';
+        document.head.appendChild(s);
+    })();
+</script>
