@@ -20,11 +20,20 @@ jobs:
         with:
           dotnet-version: '9.0.x'
 
+      - name: Jellyfin version consistency (csproj = build.yaml targetAbi)
+        run: python3 .github/scripts/check_versions.py
+
       - name: Build
         run: dotnet build -c Release
 
       - name: Unit tests
         run: dotnet test -c Release --no-build
+
+      - name: Binary compatibility with the target Jellyfin version (blocking)
+        run: |
+          v=$(python3 -c "import re;print(re.search(r'targetAbi:\s*\"([0-9]+\.[0-9]+\.[0-9]+)', open('build.yaml').read()).group(1))")
+          dotnet build tools/ApiCompat -c Release -p:JellyfinVersion=$v
+          dotnet tools/ApiCompat/bin/Release/net9.0/ApiCompat.dll src/Jellyfin.Plugin.MediaVote/bin/Release/net9.0/Jellyfin.Plugin.MediaVote.dll
 
       - name: Set up Node
         uses: actions/setup-node@v4
@@ -40,6 +49,9 @@ jobs:
           open('admin.js', 'w').write(re.search(r'<script type="text/javascript">(.*?)</script>', s, re.S).group(1))
           EOF
           node --check admin.js
+
+      - name: Custom Tabs home-page chunk regression test
+        run: node tests/client/customtabs-chunk.js
 
       - name: Client smoke tests (headless Chromium, mocked jellyfin-web)
         run: |
@@ -57,3 +69,44 @@ jobs:
         with:
           name: media-vote-dev
           path: artifacts/media-vote-dev.zip
+
+  # Early warning only (never blocks): does the plugin still compile and bind against the newest 10.11.x?
+  latest-jellyfin:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Find the latest published Jellyfin 10.11.x packages
+        id: latest
+        run: |
+          latest=$(curl -sSf https://api.nuget.org/v3-flatcontainer/jellyfin.controller/index.json | python3 -c "import json,sys;v=[x for x in json.load(sys.stdin)['versions'] if x.startswith('10.11.') and '-' not in x];print(sorted(v,key=lambda s:[int(p) for p in s.split('.')])[-1])")
+          echo "version=$latest" >> "$GITHUB_OUTPUT"
+          echo "Latest Jellyfin 10.11.x on NuGet: $latest" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Binary check - current build (made for build.yaml targetAbi) against the latest runtime
+        run: |
+          dotnet build src/Jellyfin.Plugin.MediaVote -c Release
+          dotnet build tools/ApiCompat -c Release -p:JellyfinVersion=${{ steps.latest.outputs.version }}
+          if dotnet tools/ApiCompat/bin/Release/net9.0/ApiCompat.dll src/Jellyfin.Plugin.MediaVote/bin/Release/net9.0/Jellyfin.Plugin.MediaVote.dll; then
+            echo "Current release DLL binds against ${{ steps.latest.outputs.version }}: OK" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning::The current release DLL does NOT bind against Jellyfin ${{ steps.latest.outputs.version }}. Users on that version need a rebuilt release."
+            echo "Current release DLL does NOT bind against ${{ steps.latest.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+      - name: Compile against the latest packages
+        run: |
+          rm -rf src/Jellyfin.Plugin.MediaVote/bin src/Jellyfin.Plugin.MediaVote/obj
+          if dotnet build src/Jellyfin.Plugin.MediaVote -c Release -p:JellyfinPackageVersion=${{ steps.latest.outputs.version }}; then
+            echo "Source compiles against ${{ steps.latest.outputs.version }}: OK" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning::The source no longer compiles against Jellyfin ${{ steps.latest.outputs.version }}."
+            echo "Source does NOT compile against ${{ steps.latest.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi

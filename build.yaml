@@ -16,4 +16,10 @@ owner: "alexgirollet-blip"
 artifacts:
   - "Jellyfin.Plugin.MediaVote.dll"
 changelog: >
-  First release.
+  1.0.1.0 (safety fix-up). Built for Jellyfin 10.11.10 (1.0.0.0 was built against 10.11.0 and failed with
+  MissingMethodException: IUserManager.Users was removed in 10.11.10). Media Vote no longer writes into
+  Custom Tabs' settings (the 1.0.0.0 Vote tab broke the home page); a read-only check warns about the
+  leftover tab. New safety framework: DISABLE kill-switch file, all optional entry points off by default,
+  preview mode (admins only) until "Go live", failure-proof injection and client script, readable errors,
+  start-up self-check of every Jellyfin API used. If you installed 1.0.0.0: delete its Vote tab in
+  Custom Tabs first (see README).

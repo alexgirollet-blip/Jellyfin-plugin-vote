@@ -47,8 +47,18 @@ jobs:
             echo "MEDIAVOTE_EOF"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Jellyfin version consistency (csproj = build.yaml targetAbi)
+        run: python3 .github/scripts/check_versions.py
+
       - name: Test
         run: dotnet test -c Release
+
+      - name: Binary compatibility with the target Jellyfin version
+        run: |
+          v=$(python3 -c "import re;print(re.search(r'targetAbi:\s*\"([0-9]+\.[0-9]+\.[0-9]+)', open('build.yaml').read()).group(1))")
+          dotnet build src/Jellyfin.Plugin.MediaVote -c Release
+          dotnet build tools/ApiCompat -c Release -p:JellyfinVersion=$v
+          dotnet tools/ApiCompat/bin/Release/net9.0/ApiCompat.dll src/Jellyfin.Plugin.MediaVote/bin/Release/net9.0/Jellyfin.Plugin.MediaVote.dll
 
       - name: Build plugin
         run: |
