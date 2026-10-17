@@ -41,7 +41,7 @@ function statusFor(state) {
             allowMultipleVotesPerItem: false, showLiveTallies: true, showVoterNames: true, winnerCount: 2, outcome: 'NotifyOnly',
             hasVoted: state.remaining < 3, closingSoon: false, candidateCount: items.length
         } : null,
-        lastResult: state.active ? null : { id: 's0', title: 'Winter clean', resolvedUtc: '2026-01-01T00:00:00Z', outcome: 'NotifyOnly', turnoutPercent: 80, turnoutMet: true, showBanner: false, items: [{ id: 'x', name: 'Old Film', kind: 'Movie', score: 3, status: 'flagged' }] }
+        lastResult: state.active ? null : { id: 's0', title: 'Winter clean', resolvedUtc: '2026-01-01T00:00:00Z', outcome: 'NotifyOnly', turnoutPercent: 80, turnoutMet: true, showBanner: !!state.resultBanner && !state.dismissed, items: [{ id: 'x', name: 'Old Film', kind: 'Movie', score: 3, status: 'flagged' }] }
     };
 }
 
@@ -101,6 +101,12 @@ function check(cond, msg) {
                 const pageNo = Number(url.searchParams.get('page') || 0);
                 const size = Number(url.searchParams.get('pageSize') || 30);
                 return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ total: items.length, page: pageNo, pageSize: size, genres: ['Drama'], items: items.slice(pageNo * size, pageNo * size + size) }) });
+            }
+            if (p === '/MediaVote/Results/s0/Dismiss') {
+                state.dismissCalls = (state.dismissCalls || 0) + 1;
+                if (state.dismissFails) { return route.fulfill({ status: 500, contentType: 'application/json', body: '{"error":"server_error","message":"boom"}' }); }
+                state.dismissed = true;
+                return route.fulfill({ contentType: 'application/json', body: '{"ok":true}' });
             }
             if (p === '/MediaVote/Vote') {
                 const auth = route.request().headers()['authorization'] || '';
@@ -193,6 +199,25 @@ function check(cond, msg) {
     check(await page.evaluate(() => /No active vote right now/.test(document.querySelector('#tabHost .mediavote-empty').textContent) && /Winter clean/.test(document.querySelector('#tabHost .mediavote-empty').textContent)), '"No active vote" message with last result');
     check(errors.length === 0, 'no console errors (phone): ' + errors.join(' | '));
     await context.close();
+
+    // ---------------- result banner: the close button must keep it closed (bug reported on 1.0.1.0)
+    for (const dismissFails of [false, true]) {
+        state.active = false; state.resultBanner = true; state.dismissed = false; state.dismissFails = dismissFails; state.dismissCalls = 0;
+        ({ page, errors, context } = await newPage({ width: 1280, height: 800 }));
+        await page.waitForSelector('#mediavote-banner .mediavote-icon-btn', { timeout: 5000 });
+        await page.click('#mediavote-banner .mediavote-icon-btn');
+        // Home re-render (HSS / Media Bar) right after closing: this used to put the banner straight back.
+        await page.evaluate(() => { const tab = document.querySelector('#homeTab'); const d = document.createElement('div'); d.textContent = 'rerender'; tab.appendChild(d); });
+        await page.waitForTimeout(600);
+        check(await page.evaluate(() => !document.getElementById('mediavote-banner')), 'result banner stays closed after a home re-render' + (dismissFails ? ' (server error)' : ''));
+        await page.evaluate(() => window.MediaVote && window.MediaVote.refresh && window.MediaVote.refresh());
+        await page.waitForTimeout(600);
+        check(state.dismissCalls === 1, 'closing the result banner tells the server once' + (dismissFails ? ' (server error)' : ''));
+        check(await page.evaluate(() => !document.getElementById('mediavote-banner')), 'result banner stays closed after a re-render and a fresh status' + (dismissFails ? ' even when the server call fails' : ''));
+        check(errors.filter(e => !/500/.test(e)).length === 0, 'no console errors (result banner): ' + errors.join(' | '));
+        await context.close();
+    }
+    state.resultBanner = false; state.dismissFails = false;
 
     // ---------------- phone, active vote: overlay is full screen, no horizontal overflow
     state.active = true; state.remaining = 3;
