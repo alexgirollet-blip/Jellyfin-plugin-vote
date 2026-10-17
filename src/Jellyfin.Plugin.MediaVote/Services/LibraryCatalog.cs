@@ -59,6 +59,13 @@ public sealed class LibraryCatalog
             .ToList();
     }
 
+    /// <summary>Folders of the movie/TV libraries (as Jellyfin sees them), for the read-only "media folders" status line.</summary>
+    public IReadOnlyList<(string Library, string Path)> GetLibraryFolders()
+        => JellyfinCall.Run("list library folders", () => _libraryManager.GetVirtualFolders())
+            .Where(f => f.CollectionType is null || f.CollectionType is CollectionTypeOptions.movies or CollectionTypeOptions.tvshows or CollectionTypeOptions.homevideos)
+            .SelectMany(f => (f.Locations ?? Array.Empty<string>()).Select(l => (f.Name, l)))
+            .ToList();
+
     /// <summary>
     /// Cached <see cref="BuildScope"/> over all libraries. Building reads play data for every user,
     /// so the admin's preview and the subsequent create share one result for a couple of minutes.

@@ -192,7 +192,7 @@ public class VoteRulesTests
     [Fact]
     public void ValidateSettings_RequiresConfirmationForDeletion()
     {
-        var s = new SessionSettings { Title = "x", DeadlineUtc = Build.Now.AddDays(1), Outcome = OutcomeMode.DeleteAutomatically };
+        var s = new SessionSettings { Title = "x", DeadlineUtc = Build.Now.AddDays(1), Outcome = OutcomeMode.DeleteViaArr };
         Assert.Contains(VoteRules.ValidateSettings(s, Build.Now, 3), e => e.Contains("confirmation", StringComparison.OrdinalIgnoreCase));
         s.DeleteConfirmed = true;
         Assert.Empty(VoteRules.ValidateSettings(s, Build.Now, 3));

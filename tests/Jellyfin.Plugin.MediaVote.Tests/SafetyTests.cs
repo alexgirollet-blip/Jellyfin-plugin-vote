@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection.Metadata;
+using System.Reflection.Metadata.Ecma335;
 using System.Reflection.PortableExecutable;
 using System.Text.Json;
 using Jellyfin.Plugin.MediaVote.Api;
@@ -30,8 +31,43 @@ public class SafetyTests
         Assert.False(c.EnableHomeSection);
         Assert.True(c.EnableStandalonePage);
         Assert.True(c.AdminPreviewOnly);
-        Assert.Equal(ArrAction.Unmonitor, c.RadarrAction);
         Assert.Equal(SeerrAction.Nothing, c.JellyseerrAction);
+        Assert.Empty(c.ArrInstances);
+        Assert.True(c.RadarrAddImportExclusion && c.SonarrAddImportListExclusion);
+        Assert.Equal(5, c.MaxRemovalsPerVote);
+    }
+
+    [Fact]
+    public void UpgradeFrom101_MovesSingleUrlsIntoInstances_AndKeepsEntryPoints()
+    {
+        var c = new PluginConfiguration
+        {
+            ConfigVersion = 2, EnableBanner = true, AdminPreviewOnly = false,
+            RadarrUrl = "http://radarr:7878", RadarrApiKey = "rk", SonarrUrl = "http://sonarr:8989", SonarrApiKey = "sk", JellyseerrUrl = "http://seerr:5055", JellyseerrApiKey = "jk"
+        };
+        Assert.True(c.Migrate());
+        Assert.True(c.EnableBanner); // 1.0.1.0 choices are not reset
+        Assert.False(c.AdminPreviewOnly);
+        Assert.Equal(3, c.ArrInstances.Length);
+        Assert.Equal("rk", c.InstancesOf(ArrKind.Radarr).Single().ApiKey);
+        Assert.Equal("http://sonarr:8989", c.InstancesOf(ArrKind.Sonarr).Single().Url);
+        Assert.Single(c.InstancesOf(ArrKind.Jellyseerr));
+        Assert.Equal(string.Empty, c.RadarrApiKey + c.SonarrApiKey + c.JellyseerrApiKey); // old copies of the keys are cleared
+        Assert.False(c.Migrate());
+    }
+
+    [Fact]
+    public void Config_RoundTripsThroughXml_LikeJellyfinStoresIt()
+    {
+        var c = new PluginConfiguration { ArrInstances = new[] { new ArrInstanceConfig { Kind = ArrKind.Sonarr, Name = "Sonarr Anime", Url = "http://a:1", ApiKey = "k" } } };
+        var xs = new System.Xml.Serialization.XmlSerializer(typeof(PluginConfiguration));
+        using var sw = new System.IO.StringWriter();
+        xs.Serialize(sw, c);
+        // A 1.0.x element that no longer exists must be ignored, not break loading.
+        var xml = sw.ToString().Replace("</PluginConfiguration>", "<RadarrAction>Unmonitor</RadarrAction></PluginConfiguration>", StringComparison.Ordinal);
+        var back = (PluginConfiguration)xs.Deserialize(new System.IO.StringReader(xml))!;
+        Assert.Equal("Sonarr Anime", back.ArrInstances.Single().Name);
+        Assert.Equal(ArrKind.Sonarr, back.ArrInstances.Single().Kind);
     }
 
     [Fact]
@@ -326,6 +362,125 @@ public class SafetyTests
         Assert.DoesNotContain("System.Array::SetValue", referenced);
         Assert.DoesNotContain("System.IO.File::WriteAllText", referenced);
         Assert.DoesNotContain("System.IO.File::WriteAllBytes", referenced);
+    }
+
+    [Fact]
+    public void Plugin_NeverDeletesOrMovesMediaFiles()
+    {
+        var calls = CallsByType();
+        string[] forbidden =
+        {
+            "System.IO.File::Delete", "System.IO.Directory::Delete", "System.IO.FileSystemInfo::Delete", "System.IO.FileInfo::Delete",
+            "System.IO.DirectoryInfo::Delete", "System.IO.File::Replace", "System.IO.Directory::Move", "System.IO.FileInfo::MoveTo", "System.IO.DirectoryInfo::MoveTo"
+        };
+        foreach (var (type, members) in calls)
+        {
+            foreach (var f in forbidden)
+            {
+                Assert.False(members.Contains(f), type + " calls " + f);
+            }
+
+            // File.Move only for Media Vote's own data files (atomic store write, audit log rotation).
+            if (members.Contains("System.IO.File::Move"))
+            {
+                Assert.StartsWith("Jellyfin.Plugin.MediaVote.Storage.", type, StringComparison.Ordinal);
+            }
+
+            // Jellyfin's DeleteItem only from the gateway, which drops entries whose files are already gone.
+            if (members.Any(m => m.StartsWith("MediaBrowser.Controller.Library.ILibraryManager::DeleteItem", StringComparison.Ordinal)))
+            {
+                Assert.Equal("Jellyfin.Plugin.MediaVote.Services.JellyfinMediaGateway", type);
+            }
+        }
+    }
+
+    [Fact]
+    public void DeleteFileLocation_IsOnlyEverSetToFalse()
+    {
+        var path = typeof(Plugin).Assembly.Location;
+        using var fs = File.OpenRead(path);
+        using var pe = new PEReader(fs);
+        var md = pe.GetMetadataReader();
+        var setters = md.MemberReferences.Where(h => md.GetString(md.GetMemberReference(h).Name) == "set_DeleteFileLocation").Select(h => MetadataTokens.GetToken(h)).ToHashSet();
+        int found = 0;
+        foreach (var mh in md.MethodDefinitions)
+        {
+            var def = md.GetMethodDefinition(mh);
+            if (def.RelativeVirtualAddress == 0)
+            {
+                continue;
+            }
+
+            var il = pe.GetMethodBody(def.RelativeVirtualAddress).GetILBytes()!;
+            for (int i = 1; i + 4 < il.Length; i++)
+            {
+                if ((il[i] == 0x28 || il[i] == 0x6F) && setters.Contains(BitConverter.ToInt32(il, i + 1)))
+                {
+                    found++;
+                    Assert.Equal(0x16, il[i - 1]); // ldc.i4.0 => false
+                }
+            }
+        }
+
+        Assert.True(found > 0, "the gateway sets DeleteFileLocation explicitly");
+    }
+
+    /// <summary>Called members (namespace.type::name) per declaring type, from a raw IL scan (may over-report, never under-report).</summary>
+    private static Dictionary<string, HashSet<string>> CallsByType()
+    {
+        var path = typeof(Plugin).Assembly.Location;
+        using var fs = File.OpenRead(path);
+        using var pe = new PEReader(fs);
+        var md = pe.GetMetadataReader();
+        var names = new Dictionary<int, string>();
+        foreach (var h in md.MemberReferences)
+        {
+            var mr = md.GetMemberReference(h);
+            if (mr.Parent.Kind == HandleKind.TypeReference)
+            {
+                var tr = md.GetTypeReference((TypeReferenceHandle)mr.Parent);
+                names[MetadataTokens.GetToken(h)] = md.GetString(tr.Namespace) + "." + md.GetString(tr.Name) + "::" + md.GetString(mr.Name);
+            }
+        }
+
+        var result = new Dictionary<string, HashSet<string>>();
+        foreach (var th in md.TypeDefinitions)
+        {
+            var td = md.GetTypeDefinition(th);
+            var typeName = md.GetString(td.Namespace) + "." + md.GetString(td.Name);
+            if (td.GetDeclaringType() is { IsNil: false } outer)
+            {
+                var o = md.GetTypeDefinition(outer);
+                typeName = md.GetString(o.Namespace) + "." + md.GetString(o.Name);
+            }
+
+            if (!result.TryGetValue(typeName, out var set))
+            {
+                set = new HashSet<string>();
+                result[typeName] = set;
+            }
+
+            foreach (var mh in td.GetMethods())
+            {
+                var def = md.GetMethodDefinition(mh);
+                if (def.RelativeVirtualAddress == 0)
+                {
+                    continue;
+                }
+
+                var il = pe.GetMethodBody(def.RelativeVirtualAddress).GetILBytes()!;
+                for (int i = 0; i + 4 < il.Length; i++)
+                {
+                    if ((il[i] == 0x28 || il[i] == 0x6F || il[i] == 0x73) && names.TryGetValue(BitConverter.ToInt32(il, i + 1), out var n))
+                    {
+                        set.Add(n);
+                    }
+                }
+            }
+        }
+
+        // Compiler-generated closure/state-machine classes are nested and were folded into their outer type above.
+        return result;
     }
 
     private static string FindRepoRoot()

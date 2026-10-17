@@ -27,14 +27,37 @@ public enum SessionStatus
 }
 
 /// <summary>What happens to the winners once the vote is resolved.</summary>
-[JsonConverter(typeof(JsonStringEnumConverter))]
+[JsonConverter(typeof(OutcomeModeJsonConverter))]
 public enum OutcomeMode
 {
-    /// <summary>Produce a report for the admin; delete nothing (default).</summary>
+    /// <summary>Produce a report for the admin; nothing is removed anywhere (default).</summary>
     NotifyOnly,
 
-    /// <summary>Delete winners from Jellyfin and from disk, after the Radarr/Sonarr/Jellyseerr steps.</summary>
-    DeleteAutomatically
+    /// <summary>
+    /// Ask Sonarr (series) and Radarr (movies) to delete the winners and their files. Media Vote itself never deletes,
+    /// moves or changes a media file. Votes saved by 1.0.x as "DeleteAutomatically" are read as this mode.
+    /// </summary>
+    DeleteViaArr
+}
+
+/// <summary>Reads <see cref="OutcomeMode"/> as a string, accepting the 1.0.x name "DeleteAutomatically".</summary>
+public sealed class OutcomeModeJsonConverter : JsonConverter<OutcomeMode>
+{
+    public override OutcomeMode Read(ref System.Text.Json.Utf8JsonReader reader, Type typeToConvert, System.Text.Json.JsonSerializerOptions options)
+    {
+        if (reader.TokenType == System.Text.Json.JsonTokenType.Number)
+        {
+            return reader.GetInt32() == 1 ? OutcomeMode.DeleteViaArr : OutcomeMode.NotifyOnly;
+        }
+
+        var text = reader.GetString();
+        return string.Equals(text, "DeleteViaArr", StringComparison.OrdinalIgnoreCase) || string.Equals(text, "DeleteAutomatically", StringComparison.OrdinalIgnoreCase)
+            ? OutcomeMode.DeleteViaArr
+            : OutcomeMode.NotifyOnly;
+    }
+
+    public override void Write(System.Text.Json.Utf8JsonWriter writer, OutcomeMode value, System.Text.Json.JsonSerializerOptions options)
+        => writer.WriteStringValue(value.ToString());
 }
 
 /// <summary>How the admin selects the votable items.</summary>
@@ -74,23 +97,64 @@ public enum ItemOutcomeStatus
     /// <summary>Notify-only / dry-run: listed for the admin, nothing changed.</summary>
     Reported,
 
-    /// <summary>Deleted from Jellyfin and disk.</summary>
-    Deleted,
+    /// <summary>Sonarr/Radarr deleted it (with its files) and confirmed it is gone.</summary>
+    Removed,
 
-    /// <summary>A Radarr/Sonarr/Jellyseerr step failed, so this item was not deleted.</summary>
-    SkippedExternalFailure,
+    /// <summary>No single Sonarr/Radarr entry matches it (not managed, ambiguous, or no instance configured): remove it by hand.</summary>
+    NotMatched,
 
-    /// <summary>Pre-flight check failed (missing, protected, no write permission).</summary>
-    PreflightFailed,
+    /// <summary>A Sonarr/Radarr instance could not be reached; nothing was deleted.</summary>
+    ArrUnreachable,
 
-    /// <summary>The Jellyfin deletion itself failed.</summary>
-    DeleteFailed,
+    /// <summary>Sonarr/Radarr refused the delete; their message is shown verbatim.</summary>
+    DeleteRefused,
 
-    /// <summary>Not attempted because an earlier failure stopped the run.</summary>
+    /// <summary>The delete call returned, but Sonarr/Radarr still list the title (or could not be asked).</summary>
+    VerificationFailed,
+
+    /// <summary>A configured Jellyseerr step failed, so the title was not deleted.</summary>
+    ExternalStepFailed,
+
+    /// <summary>The title (or its library) is protected and is never removed by a vote.</summary>
+    Protected,
+
+    /// <summary>Not attempted (kill switch, maximum titles per vote reached, or the vote was paused).</summary>
     NotAttempted,
 
     /// <summary>Part of a tie across the cut-off; waiting for the admin.</summary>
-    TiedAwaitingAdmin
+    TiedAwaitingAdmin,
+
+    /// <summary>1.0.x only: deleted by Jellyfin. Kept so old results still load.</summary>
+    Deleted,
+
+    /// <summary>1.0.x only: an external step failed. Kept so old results still load.</summary>
+    SkippedExternalFailure,
+
+    /// <summary>1.0.x only: Jellyfin's own write-permission check blocked deletion. Kept so old results still load.</summary>
+    PreflightFailed,
+
+    /// <summary>1.0.x only: Jellyfin's deletion failed. Kept so old results still load.</summary>
+    DeleteFailed
+}
+
+/// <summary>Removing the stale Jellyfin entry after Sonarr/Radarr deleted the files. Files are never touched by Media Vote.</summary>
+[JsonConverter(typeof(JsonStringEnumConverter))]
+public enum JellyfinCleanup
+{
+    /// <summary>Nothing to do (not removed).</summary>
+    None,
+
+    /// <summary>The files were gone, so the Jellyfin entry was removed (without deleting files).</summary>
+    Done,
+
+    /// <summary>The files were still on disk right after the delete; a library refresh was requested and Media Vote checks again every hour.</summary>
+    Pending,
+
+    /// <summary>The files are still on disk an hour or more after Sonarr/Radarr reported success: check Sonarr/Radarr.</summary>
+    FilesStillOnDisk,
+
+    /// <summary>Jellyfin refused to drop the entry; it will disappear at the next library scan.</summary>
+    Failed
 }
 
 /// <summary>Snapshot of a votable item, frozen when the vote is created.</summary>
@@ -123,6 +187,12 @@ public sealed class CandidateItem
     public string? Path { get; set; }
 
     public Dictionary<string, string> ProviderIds { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>True when exactly one Sonarr/Radarr entry manages it, false when none does, null when unknown (checked read-only when the vote is built).</summary>
+    public bool? Removable { get; set; }
+
+    /// <summary>Why it is or is not removable automatically (matched entry, or the reason).</summary>
+    public string? RemovalNote { get; set; }
 }
 
 /// <summary>A single vote. Votes are not anonymous: user and time are always stored.</summary>
@@ -181,8 +251,17 @@ public sealed class SessionSettings
 
     public OutcomeMode Outcome { get; set; } = OutcomeMode.NotifyOnly;
 
-    /// <summary>Must be true for <see cref="OutcomeMode.DeleteAutomatically"/>; set by an explicit checkbox.</summary>
+    /// <summary>Must be true for <see cref="OutcomeMode.DeleteViaArr"/>; set by an explicit checkbox.</summary>
     public bool DeleteConfirmed { get; set; }
+
+    /// <summary>
+    /// For <see cref="OutcomeMode.DeleteViaArr"/>: also let people vote on titles Sonarr/Radarr do not manage (off by default).
+    /// If such a title wins it is listed for removal by hand; it is never deleted automatically.
+    /// </summary>
+    public bool IncludeUnmanagedTitles { get; set; }
+
+    /// <summary>Safety cap on titles Sonarr/Radarr may delete for this vote. Copied from the settings by the server when the vote is created.</summary>
+    public int MaxRemovals { get; set; }
 
     public TiePolicy TiePolicy { get; set; } = TiePolicy.FlagForAdmin;
 
@@ -265,6 +344,24 @@ public sealed class ItemOutcome
     public List<ExternalStepResult> ExternalSteps { get; set; } = new();
 
     public DateTime? CompletedUtc { get; set; }
+
+    /// <summary>Instance that manages the title (for example "Sonarr Anime").</summary>
+    public string? ArrInstance { get; set; }
+
+    /// <summary>Sonarr series id / Radarr movie id.</summary>
+    public int? ArrId { get; set; }
+
+    public string? ArrTitle { get; set; }
+
+    /// <summary>Size on disk as Sonarr/Radarr report it (what their delete frees).</summary>
+    public long ArrSizeOnDisk { get; set; }
+
+    /// <summary>True when the admin has to look at this title (failure, or a manual deletion).</summary>
+    public bool NeedsAttention { get; set; }
+
+    public JellyfinCleanup JellyfinCleanup { get; set; }
+
+    public string? CleanupNote { get; set; }
 }
 
 /// <summary>The computed result of a vote.</summary>

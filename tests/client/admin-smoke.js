@@ -34,8 +34,8 @@ function check(cond, msg) { console.log((cond ? 'PASS ' : 'FAIL ') + msg); if (!
     const settings = {
         enableBanner: true, enableCustomTab: true, enablePluginPage: true, enableHomeSection: true, enableStandalonePage: true, tabTitle: 'Vote',
         timeZoneId: 'Europe/London', closingSoonHours: 24, resultBannerDays: 7, usePlaybackReporting: true, protectedItemIds: [], protectedItemNames: {}, protectedLibraryIds: [],
-        radarrUrl: 'http://radarr:7878', radarrApiKey: '••••••1234', radarrAction: 'Unmonitor',
-        sonarrUrl: '', sonarrApiKey: '', sonarrAction: 'Unmonitor', jellyseerrUrl: '', jellyseerrApiKey: '', jellyseerrAction: 'Nothing',
+        arrInstances: [{ id: 'r1', kind: 'Radarr', name: 'Radarr', url: 'http://radarr:7878', apiKey: '••••••1234', enabled: true }],
+        radarrAddImportExclusion: true, sonarrAddImportListExclusion: true, jellyseerrAction: 'Nothing', maxRemovalsPerVote: 5,
         webhookUrl: '', webhookKind: 'Discord', webhookOnOpened: true, webhookOnClosingSoon: true, webhookOnResults: true, publicServerUrl: ''
     };
     await page.route(ORIGIN + '/**', async route => {
@@ -54,7 +54,23 @@ function check(cond, msg) { console.log((cond ? 'PASS ' : 'FAIL ') + msg); if (!
                 selfCheckUtc: '2026-06-01T12:00:00Z', pluginVersion: '1.0.1.0', builtForJellyfin: '10.11.10',
                 injection: { mode: 'NotNeeded', message: 'Not needed: the home banner and the Vote tab are both off.', selfTestPassed: false, leftoverDirectInjection: false },
                 integrations: [{ name: 'Custom Tabs', detected: true, version: '0.2.10.0', enabled: false, registered: false, message: 'ACTION NEEDED' }],
-                processUser: 'uid 1000, gid 1000', dataDirectory: '/config/data/mediavote', openSessionId: null, sessions: [] });
+                processUser: 'uid 1000, gid 1000', dataDirectory: '/config/data/mediavote', openSessionId: null, maxRemovalsPerVote: 5, arrInstanceCount: 1,
+                sessions: state.withSession ? [{ id: 's9', title: 'Autumn', status: 'Resolved', deadlineLocal: 'Sun 25 Oct 2026 20:00', voters: 5, needsAttention: true }] : [] });
+        }
+        if (p === 'Sessions/s9') {
+            const item = (o) => Object.assign({ kind: 'Movie', score: 3, sizeBytes: 2e9, paths: ['/LM1/Movies/' + o.name], externalSteps: [], needsAttention: false, jellyfinCleanup: 'None' }, o);
+            return json({ deadlineLocal: 'Sun 25 Oct 2026 20:00', deadlineLocalInput: '2026-10-25T20:00', eligibleCount: 16, voterCount: 5, nonVoters: [], votes: [], ranking: [],
+                session: { id: 's9', status: 'Resolved', candidates: [], votes: [], settings: { title: 'Autumn', outcome: 'DeleteViaArr', votesPerUser: 3, winnerCount: 3 },
+                    result: { outcome: 'DeleteViaArr', voterCount: 5, eligibleVoterCount: 16, turnoutPercent: 31, totalBytesSelected: 6e9, totalBytesFreed: 2e9, execution: 'Completed', turnoutMet: true, tiedItemIds: [], notes: [],
+                        items: [
+                            item({ name: 'Gone Film', status: 'Removed', arrInstance: 'Radarr', arrId: 42, arrTitle: 'Gone Film (2001)', arrSizeOnDisk: 2e9, jellyfinCleanup: 'FilesStillOnDisk', cleanupNote: 'files still on disk', needsAttention: true, message: 'Deleted with its files by Radarr and confirmed gone.' }),
+                            item({ name: 'Home Video', status: 'NotMatched', needsAttention: true, message: 'Not managed by Radarr (no entry with its TMDb id 5). Nothing was deleted; remove it by hand if it should go.' }),
+                            item({ name: 'Locked Film', status: 'DeleteRefused', needsAttention: true, arrInstance: 'Radarr', arrId: 7, message: "Radarr answered HTTP 500: Access to the path '/movies/Locked Film' is denied." })
+                        ] } } });
+        }
+        if (p === 'ArrStatus') {
+            state.arrStatusCalls = (state.arrStatusCalls || 0) + 1;
+            return json({ instances: [{ name: 'Radarr', kind: 'Radarr', enabled: true, ok: true, message: 'Connected: Radarr 5.14.0', rootFolders: [{ path: '/movies', freeSpace: 7e11, totalSpace: 8e12 }] }, { name: 'Sonarr Anime', kind: 'Sonarr', enabled: true, ok: false, message: 'Could not reach Sonarr Anime: Connection refused', rootFolders: [] }] });
         }
         if (p === 'Settings' && route.request().method() === 'GET') { return json(settings); }
         if (p === 'Libraries') { return json([{ id: 'lib1', name: 'Movies', collectionType: 'movies', protected: false }, { id: 'lib2', name: 'Kids', collectionType: 'movies', protected: true }]); }
@@ -63,7 +79,11 @@ function check(cond, msg) { console.log((cond ? 'PASS ' : 'FAIL ') + msg); if (!
             return json([{ id: 'u1', name: 'alex', disabled: false, admin: true }, { id: 'u2', name: 'sam', disabled: false, admin: false }, { id: 'u3', name: 'old friend', disabled: true, admin: false }]);
         }
         if (p === 'Visibility') { state.preview = posted.Visibility.previewOnly; return json({ ok: true, previewOnly: state.preview }); }
-        if (p === 'Preview') { return json({ count: 12, movies: 10, series: 2, totalBytes: 5e11, maxFreedBytes: 6e10, items: [{ name: 'Big', year: 2001, kind: 'Movie', sizeBytes: 6e10, playCount: 0 }] }); }
+        if (p === 'Preview') {
+            const del = posted.Preview && posted.Preview.settings.outcome === 'DeleteViaArr';
+            return json({ count: del ? 11 : 12, movies: 10, series: 2, totalBytes: 5e11, maxFreedBytes: 6e10, notRemovable: 1, excludedNotRemovable: del ? 1 : 0, maxRemovals: 5, arrErrors: [],
+                items: [{ name: 'Big', year: 2001, kind: 'Movie', sizeBytes: 6e10, playCount: 0, removable: true }, { name: 'Home video', year: 2010, kind: 'Movie', sizeBytes: 1e9, playCount: 0, removable: false, removalNote: 'Not managed by Radarr' }] });
+        }
         if (p === 'Sessions') { return json({ ok: true, id: 'new-id' }); }
         if (p === 'Settings') { return json({ ok: true }); }
         if (p.indexOf('Test/') === 0) { return json({ ok: true, message: 'Connected: Radarr 5.14' }); }
@@ -78,7 +98,7 @@ function check(cond, msg) { console.log((cond ? 'PASS ' : 'FAIL ') + msg); if (!
     await page.check('input[name="mvVoters"][value="some"]');
     await page.waitForSelector('#mvUserError .mv-warn');
     check(await page.evaluate(() => /Could not load the user list: Media Vote error: Method not found/.test(document.getElementById('mvUserError').textContent)), 'users failing: readable error shown in the user picker');
-    check(await page.evaluate(() => document.getElementById('sRadarrUrl') && document.getElementById('sRadarrUrl').value === 'http://radarr:7878'), 'users failing: settings still loaded');
+    check(await page.evaluate(() => Array.prototype.some.call(document.querySelectorAll('#sArr input'), i => i.value === 'http://radarr:7878')), 'users failing: settings still loaded');
     check(await page.evaluate(() => document.querySelectorAll('#mvLibList input').length === 2 && document.querySelectorAll('#sProtLibs input').length === 2), 'users failing: libraries still loaded');
     state.usersFail = false;
     await page.click('#mvUserError button');
@@ -98,6 +118,10 @@ function check(cond, msg) { console.log((cond ? 'PASS ' : 'FAIL ') + msg); if (!
     const statusText = await page.evaluate(() => document.getElementById('mvStatus').textContent);
     check(/Preview mode is ON/.test(statusText) && /16 found/.test(statusText) && /could not read play statistics/.test(statusText), 'status tab: preview state and self-check lines with the exact error');
     check(/written by Media Vote 1.0.0.0/.test(statusText) && /delete the tab named above/i.test(statusText), 'status tab: 1.0.0.0 Custom Tabs leftover warning with instructions');
+    await page.waitForFunction(() => /Radarr 5\.14\.0/.test(document.getElementById('mvStatus').textContent));
+    const arrText = await page.evaluate(() => document.getElementById('mvStatus').textContent);
+    check(/651\.9 GB free of 7\.3 TB/.test(arrText) && /Could not reach Sonarr Anime/.test(arrText), 'status tab: Sonarr/Radarr state, version, root-folder free space and errors (read-only)');
+    check(/expected and fine/.test(arrText), 'status tab: says Jellyfin not writing to media drives is expected');
     await page.click('#mvStatus button.button-submit');
     await page.waitForSelector('#mvStatus .mv-warn button');
     await page.click('#mvStatus .mv-warn button.button-submit');
@@ -111,28 +135,50 @@ function check(cond, msg) { console.log((cond ? 'PASS ' : 'FAIL ') + msg); if (!
     await page.click('#mvPreviewBtn');
     await page.waitForSelector('#mvPreview .mv-ok');
     check(await page.evaluate(() => /12 titles/.test(document.getElementById('mvPreview').textContent) && /freed/.test(document.getElementById('mvPreview').textContent)), 'preview shows count and space that would be freed');
+    check(await page.evaluate(() => /not removable automatically/.test(document.getElementById('mvPreview').textContent)), 'preview marks titles Sonarr/Radarr do not manage');
+    await page.check('#mvPreview input[type="checkbox"]');
+    check(await page.evaluate(() => document.querySelectorAll('#mvPreview tbody tr').length === 1), 'preview filter: removable only');
 
-    await page.check('input[name="mvOutcome"][value="DeleteAutomatically"]');
-    check(await page.isVisible('#mvDeleteBox'), 'delete confirmation checkbox appears for automatic deletion');
+    await page.check('input[name="mvOutcome"][value="DeleteViaArr"]');
+    check(await page.isVisible('#mvDeleteBox'), 'delete confirmation checkbox appears for "Delete via Sonarr/Radarr"');
+    check(await page.evaluate(() => /at most 5 title/.test(document.getElementById('mvMaxNote').textContent)), 'safety maximum shown');
+    await page.click('#mvPreviewBtn');
+    await page.waitForFunction(() => /were left out/.test(document.getElementById('mvPreview').textContent));
+    check(true, 'preview for a delete vote says unmanaged titles are left out');
     await page.click('#mvCreateBtn');
     check(!posted.Sessions, 'create is blocked until the deletion confirmation is ticked');
     await page.check('#mvDeleteConfirm');
     await page.click('#mvCreateBtn');
     await page.waitForFunction(() => document.querySelector('[data-panel="votes"]').hidden === false);
-    check(posted.Sessions && posted.Sessions.settings.title === 'Spring clean' && posted.Sessions.settings.outcome === 'DeleteAutomatically' && posted.Sessions.settings.deleteConfirmed === true && posted.Sessions.deadlineLocal === '2026-06-08T20:00', 'create sends the expected settings');
+    check(posted.Sessions && posted.Sessions.settings.title === 'Spring clean' && posted.Sessions.settings.outcome === 'DeleteViaArr' && posted.Sessions.settings.deleteConfirmed === true && posted.Sessions.settings.includeUnmanagedTitles === false && posted.Sessions.deadlineLocal === '2026-06-08T20:00', 'create sends the expected settings');
 
     await page.click('[data-tab="settings"]');
-    check(await page.inputValue('#sRadarrKey') === '••••••1234', 'API key is shown masked');
-    await page.click('#sArr button');
+    check(await page.evaluate(() => document.querySelector('#sArr input[type="password"]').value === '••••••1234'), 'API key is shown masked');
+    await page.click('#sArr .mv-card button');
     await page.waitForFunction(() => /Connected/.test(document.getElementById('sArr').textContent));
-    check(posted['Test/Radarr'] && posted['Test/Radarr'].url === 'http://radarr:7878', 'test connection posts the URL');
+    check(posted['Test/Radarr'] && posted['Test/Radarr'].url === 'http://radarr:7878' && posted['Test/Radarr'].id === 'r1', 'test connection posts the URL and the instance id (to use the saved key)');
+    await page.evaluate(() => Array.prototype.find.call(document.querySelectorAll('#sArr button'), b => b.textContent === 'Add Sonarr').click());
+    await page.evaluate(() => { const cards = document.querySelectorAll('#sArr .mv-card'); const last = cards[cards.length - 1]; const inputs = last.querySelectorAll('input'); inputs[0].value = 'Sonarr Anime'; inputs[1].value = 'http://anime:8989'; inputs[2].value = 'newkey'; });
     check(await page.evaluate(() => /data-mediavote-mount="tab"/.test(document.getElementById('sSnippet').value) && !/script/i.test(document.getElementById('sSnippet').value)), 'Vote tab card shows the minimal snippet (no script)');
     await page.click('#sCopySnippet');
     check(await page.evaluate(() => document.getElementById('sCopyResult').textContent.length > 0), 'copy button gives in-page feedback');
     await page.uncheck('#sBanner'); await page.uncheck('#sTab'); await page.uncheck('#sPage'); await page.uncheck('#sStandalone');
     await page.click('#mvSettingsForm button[type="submit"]');
     await page.waitForFunction(() => /Settings saved/.test(document.getElementById('mvMsg').textContent));
-    check(posted.Settings && posted.Settings.enableBanner === false && posted.Settings.enableStandalonePage === false && posted.Settings.radarrApiKey.indexOf('•') === 0, 'every entry point can be off (staged rollout); masked key sent back unchanged');
+    check(posted.Settings && posted.Settings.enableBanner === false && posted.Settings.enableStandalonePage === false && posted.Settings.arrInstances[0].apiKey.indexOf('•') === 0, 'every entry point can be off (staged rollout); masked key sent back unchanged');
+    check(posted.Settings.arrInstances.length === 2 && posted.Settings.arrInstances[1].kind === 'Sonarr' && posted.Settings.arrInstances[1].name === 'Sonarr Anime' && posted.Settings.arrInstances[1].id === null && posted.Settings.maxRemovalsPerVote === 5, 'a second instance (Anime Sonarr) can be added');
+    // Result of a "Delete via Sonarr/Radarr" vote.
+    state.withSession = true;
+    await page.click('[data-tab="votes"]');
+    await page.waitForSelector('#mvHistory button');
+    await page.click('#mvHistory button');
+    await page.waitForFunction(() => /Removed by Sonarr\/Radarr/.test(document.getElementById('mvDetail').textContent));
+    const res = await page.evaluate(() => document.getElementById('mvDetail').textContent);
+    check(/DELETE VIA SONARR\/RADARR/.test(res) && /To remove by hand/.test(res) && /Home Video/.test(res), 'result: unmanaged winners listed for removal by hand');
+    check(/Access to the path '\/movies\/Locked Film' is denied\./.test(res) && /refused the delete/.test(res), 'result: Sonarr/Radarr error shown verbatim');
+    check(/FILES STILL ON DISK/.test(res) && /needs attention/.test(res), 'result: files left on disk after removal are flagged');
+    check(/Retry titles not removed/.test(res) && !/Preflight/i.test(res), 'result: Retry offered; no pre-flight wording');
+
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1);
     check(overflow, 'admin page has no horizontal overflow on a 375px phone');
     check(errors.length === 0, 'no console errors: ' + errors.join(' | '));

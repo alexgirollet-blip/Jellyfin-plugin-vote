@@ -81,10 +81,12 @@ public sealed class WebhookNotifier : INotifier
         {
             string verb = i.Status switch
             {
-                ItemOutcomeStatus.Deleted => "removed",
+                ItemOutcomeStatus.Removed or ItemOutcomeStatus.Deleted => "removed via " + (i.ArrInstance ?? "Sonarr/Radarr"),
                 ItemOutcomeStatus.Reported => r.Outcome == OutcomeMode.NotifyOnly ? "selected (admin will review)" : "kept",
                 ItemOutcomeStatus.TiedAwaitingAdmin => "tied – admin will decide",
-                _ => "not removed (" + i.Status + ")"
+                ItemOutcomeStatus.Protected => "kept (protected)",
+                ItemOutcomeStatus.NotMatched => "not managed by Sonarr/Radarr – admin will remove it by hand",
+                _ => "not removed yet – needs the admin (" + i.Status + ")"
             };
             sb.AppendLine(CultureInfo.InvariantCulture, $"• {i.Name} — {verb}");
         }

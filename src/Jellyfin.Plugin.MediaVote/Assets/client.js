@@ -437,7 +437,7 @@
             function tick() {
                 var ms = new Date(a.deadlineUtc).getTime() - nowServer();
                 meta.textContent = (ms > 0 ? 'Closes ' + a.deadlineLocal + ' (' + a.timeZone + ') · in ' + relativeTime(ms) : 'Voting has closed') +
-                    ' · Top ' + a.winnerCount + ' ' + (a.outcome === 'DeleteAutomatically' ? 'will be removed' : 'will be reviewed by the admin');
+                    ' · Top ' + a.winnerCount + ' ' + (a.outcome === 'DeleteViaArr' ? 'will be removed' : 'will be reviewed by the admin');
             }
             tick();
             clearInterval(countdownTimer);
@@ -527,7 +527,7 @@
             if (when) { wrap.appendChild(el('p', { className: 'mediavote-meta', text: 'Closed ' + when + ' · turnout ' + r.turnoutPercent + '%' })); }
             if (!r.turnoutMet) { wrap.appendChild(el('p', { text: 'Not enough people voted, so nothing was removed.' })); }
             var list = el('ul', { className: 'mediavote-result-list' });
-            var labels = { removed: 'Removed', flagged: 'Selected for admin review', tied: 'Tied: the admin will decide', kept: 'Kept', pending: 'Pending' };
+            var labels = { removed: 'Removed', flagged: 'Selected for admin review', tied: 'Tied: the admin will decide', kept: 'Kept', pending: 'Waiting for the admin' };
             r.items.forEach(function (i) { list.appendChild(el('li', null, [el('strong', { text: i.name }), ' — ' + (labels[i.status] || i.status)])); });
             if (r.items.length) { wrap.appendChild(list); }
             else if (r.turnoutMet) { wrap.appendChild(el('p', { text: 'Nothing was selected.' })); }
@@ -585,6 +585,7 @@
             var facts = [item.kind === 'Series' ? 'Series' : 'Movie', formatBytes(item.sizeBytes)];
             if (item.library) { facts.push(item.library); }
             info.appendChild(el('p', { className: 'mediavote-facts', text: facts.join(' · ') }));
+            if (item.removable === false) { info.appendChild(el('span', { className: 'mediavote-chip', text: 'Not removable automatically' })); }
             var stats = [];
             var added = formatDate(item.dateAddedUtc);
             if (added) { stats.push('Added ' + added); }
@@ -994,7 +995,7 @@
         }
         if (wantsResultBanner(status)) {
             var removed = r.items.filter(function (i) { return i.status === 'removed'; }).map(function (i) { return i.name; });
-            var flagged = r.items.filter(function (i) { return i.status === 'flagged' || i.status === 'tied'; }).map(function (i) { return i.name; });
+            var flagged = r.items.filter(function (i) { return i.status === 'flagged' || i.status === 'tied' || i.status === 'pending'; }).map(function (i) { return i.name; });
             var summary = !r.turnoutMet ? 'Not enough people voted; nothing was removed.'
                 : removed.length ? 'Removed: ' + removed.join(', ')
                     : flagged.length ? 'Selected for admin review: ' + flagged.join(', ') : 'Nothing was selected.';

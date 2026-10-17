@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
 using System.Text.Json;
@@ -9,295 +10,177 @@ using Jellyfin.Plugin.MediaVote.Core;
 
 namespace Jellyfin.Plugin.MediaVote.Integrations.Arr;
 
-/// <summary>An entry matched in an external app.</summary>
-public sealed record ArrMatch(int Id, string Title, int? Year, bool? Monitored, string? Path);
+/// <summary>A root folder as reported by Sonarr/Radarr (GET /api/v3/rootfolder).</summary>
+public sealed record ArrRootFolder(string Path, long? FreeSpace, long? TotalSpace);
 
-/// <summary>Outcome of a lookup: a match, "not in this app", or "cannot match (missing ids)".</summary>
-public sealed record ArrLookup(ArrMatch? Match, string? CannotMatchReason);
-
-/// <summary>Shared plan/execute logic for Radarr and Sonarr (both expose the v3 API).</summary>
-public abstract class ArrServiceBase : IExternalService
+/// <summary>
+/// One Radarr or Sonarr instance (API v3: Radarr v3–v5, Sonarr v3–v4).
+/// <list type="bullet">
+/// <item>GET /api/v3/movie and /api/v3/series: the whole library, for matching.</item>
+/// <item>GET /api/v3/movie/{id}, /api/v3/series/{id}: re-check and verification (404 = gone).</item>
+/// <item>DELETE /api/v3/movie/{id}?deleteFiles=true&amp;addImportExclusion=…</item>
+/// <item>DELETE /api/v3/series/{id}?deleteFiles=true&amp;addImportListExclusion=…</item>
+/// <item>GET /api/v3/system/status, /api/v3/rootfolder and /api/v3/diskspace for the Status tab.</item>
+/// </list>
+/// Verified against the Sonarr (v3 branch, v4 main) and Radarr (v5, develop) source: DELETE answers 200 as soon as
+/// the database row is gone; the files are deleted (or moved to the recycle bin) afterwards in the background, and a
+/// failure there is only logged by Sonarr/Radarr. Media Vote therefore verifies the entry is gone AND later checks the
+/// files are gone from disk before it lets Jellyfin forget the title.
+/// </summary>
+public sealed class ArrClient
 {
-    protected ArrServiceBase(ArrHttp http, ArrAction action)
+    private readonly ArrHttp _http;
+    private readonly bool _addExclusion;
+
+    public ArrClient(ArrHttp http, ArrKind kind, string name, bool addExclusion)
     {
-        Http = http;
-        Action = action;
+        if (kind == ArrKind.Jellyseerr)
+        {
+            throw new ArgumentException("Use JellyseerrClient for Jellyseerr.", nameof(kind));
+        }
+
+        _http = http;
+        Kind = kind;
+        Name = name;
+        _addExclusion = addExclusion;
     }
 
-    public abstract string Name { get; }
+    public ArrKind Kind { get; }
 
-    public bool HasConnection => Http.IsConfigured;
+    public string Name { get; }
 
-    public ArrAction Action { get; }
+    private string Resource => Kind == ArrKind.Radarr ? "movie" : "series";
 
-    public string ActionName => Action switch
+    public async Task<List<ArrEntry>> ListAsync(CancellationToken ct)
     {
-        ArrAction.Unmonitor => "Unmonitor",
-        ArrAction.RemoveAndExclude => "Remove and add import exclusion",
-        _ => "Do nothing"
-    };
+        using var doc = await _http.GetAsync("/api/v3/" + Resource, ct).ConfigureAwait(false)
+            ?? throw new ArrException($"{Name}: /api/v3/{Resource} not found. Check the base URL (include any URL base such as /sonarr).");
+        if (doc.RootElement.ValueKind != JsonValueKind.Array)
+        {
+            throw new ArrException($"{Name}: unexpected answer from /api/v3/{Resource}.");
+        }
 
-    public bool IsNoOp => Action == ArrAction.Nothing;
+        return doc.RootElement.EnumerateArray().Where(e => e.ValueKind == JsonValueKind.Object).Select(ToEntry).Where(e => e.Id > 0).ToList();
+    }
 
-    protected ArrHttp Http { get; }
+    /// <summary>Null when the entry no longer exists (HTTP 404).</summary>
+    public async Task<ArrEntry?> GetAsync(int id, CancellationToken ct)
+    {
+        using var doc = await _http.GetAsync("/api/v3/" + Resource + "/" + id.ToString(CultureInfo.InvariantCulture), ct).ConfigureAwait(false);
+        return doc is null || doc.RootElement.ValueKind != JsonValueKind.Object ? null : ToEntry(doc.RootElement);
+    }
 
-    public abstract bool AppliesTo(MediaKind kind);
-
-    /// <summary>Read-only lookup (GET only).</summary>
-    public abstract Task<ArrLookup> LookupAsync(MediaItemSnapshot item, CancellationToken ct);
+    /// <summary>Deletes the entry AND its files in this instance. Throws <see cref="ArrException"/> (with the instance's message) on failure.</summary>
+    public Task DeleteAsync(int id, CancellationToken ct)
+    {
+        string exclusion = Kind == ArrKind.Radarr ? "addImportExclusion" : "addImportListExclusion";
+        return _http.DeleteAsync(
+            "/api/v3/" + Resource + "/" + id.ToString(CultureInfo.InvariantCulture) + "?deleteFiles=true&" + exclusion + "=" + (_addExclusion ? "true" : "false"),
+            ct);
+    }
 
     /// <summary>GET system/status; returns "AppName version".</summary>
     public async Task<string> TestAsync(CancellationToken ct)
     {
-        using var doc = await Http.GetAsync("/api/v3/system/status", ct).ConfigureAwait(false)
+        using var doc = await _http.GetAsync("/api/v3/system/status", ct).ConfigureAwait(false)
             ?? throw new ArrException($"{Name}: /api/v3/system/status not found. Check the base URL.");
         var root = doc.RootElement;
-        return $"{Str(root, "appName") ?? Name} {Str(root, "version")}".Trim();
+        var app = Str(root, "appName") ?? Kind.ToString();
+        if (!string.Equals(app, Kind.ToString(), StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ArrException($"This URL answers as {app}, not {Kind}. Check the base URL and the instance type.") { Answered = true };
+        }
+
+        return $"{app} {Str(root, "version")}".Trim();
     }
 
-    public async Task<ExternalStepResult> PlanAsync(MediaItemSnapshot item, CancellationToken cancellationToken)
+    /// <summary>
+    /// Root folders with free space. /rootfolder has no total size, so the total comes from /diskspace (the disk whose
+    /// path is the longest prefix of the root folder).
+    /// </summary>
+    public async Task<List<ArrRootFolder>> RootFoldersAsync(CancellationToken ct)
     {
-        var r = NewResult();
-        var lookup = await LookupAsync(item, cancellationToken).ConfigureAwait(false);
-        if (lookup.CannotMatchReason is not null)
+        var disks = new List<(string Path, long? Total)>();
+        using (var dd = await _http.GetAsync("/api/v3/diskspace", ct).ConfigureAwait(false))
         {
-            r.Status = IsNoOp ? ExternalStepStatus.Skipped : ExternalStepStatus.Failed;
-            r.Message = lookup.CannotMatchReason;
-            return r;
+            if (dd is not null && dd.RootElement.ValueKind == JsonValueKind.Array)
+            {
+                disks.AddRange(dd.RootElement.EnumerateArray().Where(e => e.ValueKind == JsonValueKind.Object).Select(e => (Str(e, "path") ?? string.Empty, Long(e, "totalSpace"))));
+            }
         }
 
-        if (lookup.Match is null)
+        using var doc = await _http.GetAsync("/api/v3/rootfolder", ct).ConfigureAwait(false);
+        if (doc is null || doc.RootElement.ValueKind != JsonValueKind.Array)
         {
-            r.Status = ExternalStepStatus.NotFound;
-            r.Message = $"Not in {Name}.";
-            return r;
+            return new List<ArrRootFolder>();
         }
 
-        Fill(r, lookup.Match);
-        if (IsNoOp)
-        {
-            r.Status = ExternalStepStatus.Skipped;
-            r.Message = $"Matched {Describe(lookup.Match)}; admin chose \"Do nothing\".";
-        }
-        else
-        {
-            r.Status = ExternalStepStatus.WouldDo;
-            r.Message = Action == ArrAction.Unmonitor
-                ? $"Would unmonitor {Describe(lookup.Match)}."
-                : $"Would remove {Describe(lookup.Match)} from {Name} and add an import exclusion ({Name} would not delete files).";
-        }
-
-        return r;
+        return doc.RootElement.EnumerateArray()
+            .Where(e => e.ValueKind == JsonValueKind.Object)
+            .Select(e =>
+            {
+                var path = Str(e, "path") ?? "?";
+                var disk = disks.Where(d => d.Path.Length > 0 && path.StartsWith(d.Path, StringComparison.Ordinal)).OrderByDescending(d => d.Path.Length).FirstOrDefault();
+                return new ArrRootFolder(path, Long(e, "freeSpace"), disk.Total);
+            })
+            .ToList();
     }
 
-    public async Task<ExternalStepResult> ExecuteAsync(MediaItemSnapshot item, CancellationToken cancellationToken)
-    {
-        var r = NewResult();
-        if (IsNoOp)
-        {
-            r.Status = ExternalStepStatus.Skipped;
-            return r;
-        }
-
-        var lookup = await LookupAsync(item, cancellationToken).ConfigureAwait(false);
-        if (lookup.CannotMatchReason is not null)
-        {
-            r.Status = ExternalStepStatus.Failed;
-            r.Message = lookup.CannotMatchReason;
-            return r;
-        }
-
-        if (lookup.Match is null)
-        {
-            r.Status = ExternalStepStatus.NotFound;
-            r.Message = $"Not in {Name}; nothing to do.";
-            return r;
-        }
-
-        Fill(r, lookup.Match);
-        if (Action == ArrAction.Unmonitor)
-        {
-            await UnmonitorAsync(lookup.Match.Id, cancellationToken).ConfigureAwait(false);
-            r.Message = $"Unmonitored {Describe(lookup.Match)}.";
-        }
-        else
-        {
-            await RemoveAndExcludeAsync(lookup.Match.Id, cancellationToken).ConfigureAwait(false);
-            r.Message = $"Removed {Describe(lookup.Match)} from {Name} with import exclusion (files left for Jellyfin to delete).";
-        }
-
-        r.Status = ExternalStepStatus.Done;
-        return r;
-    }
-
-    protected abstract Task UnmonitorAsync(int id, CancellationToken ct);
-
-    protected abstract Task RemoveAndExcludeAsync(int id, CancellationToken ct);
-
-    protected static string? Str(JsonElement e, string name)
+    internal static string? Str(JsonElement e, string name)
         => e.ValueKind == JsonValueKind.Object && e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
 
-    protected static int? Int(JsonElement e, string name)
+    internal static int? Int(JsonElement e, string name)
         => e.ValueKind == JsonValueKind.Object && e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetInt32(out var i) ? i : null;
 
-    protected static bool? Bool(JsonElement e, string name)
-        => e.ValueKind == JsonValueKind.Object && e.TryGetProperty(name, out var v) && (v.ValueKind == JsonValueKind.True || v.ValueKind == JsonValueKind.False) ? v.GetBoolean() : null;
+    internal static long? Long(JsonElement e, string name)
+        => e.ValueKind == JsonValueKind.Object && e.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetInt64(out var i) ? i : null;
 
-    protected static ArrMatch ToMatch(JsonElement e)
-        => new(Int(e, "id") ?? 0, Str(e, "title") ?? "?", Int(e, "year"), Bool(e, "monitored"), Str(e, "path"));
-
-    private static string Describe(ArrMatch m)
-        => m.Year is null ? $"\"{m.Title}\"" : string.Create(CultureInfo.InvariantCulture, $"\"{m.Title} ({m.Year})\"");
-
-    private void Fill(ExternalStepResult r, ArrMatch m)
+    private ArrEntry ToEntry(JsonElement e)
     {
-        r.MatchedTitle = m.Year is null ? m.Title : string.Create(CultureInfo.InvariantCulture, $"{m.Title} ({m.Year})");
-        r.ExternalId = m.Id.ToString(CultureInfo.InvariantCulture);
-    }
+        long size = Long(e, "sizeOnDisk") ?? 0;
+        if (size == 0 && e.TryGetProperty("statistics", out var stats))
+        {
+            size = Long(stats, "sizeOnDisk") ?? 0;
+        }
 
-    private ExternalStepResult NewResult() => new() { Service = Name, Action = ActionName };
+        return new ArrEntry
+        {
+            Instance = Name,
+            Kind = Kind,
+            Id = Int(e, "id") ?? 0,
+            Title = Str(e, "title") ?? "?",
+            Year = Int(e, "year") is > 0 and var y ? y : null,
+            Path = Str(e, "path"),
+            TmdbId = Int(e, "tmdbId") is > 0 and var tm ? tm : null,
+            TvdbId = Int(e, "tvdbId") is > 0 and var tv ? tv : null,
+            ImdbId = string.IsNullOrWhiteSpace(Str(e, "imdbId")) ? null : Str(e, "imdbId"),
+            SizeOnDisk = size
+        };
+    }
 }
 
 /// <summary>
-/// Radarr v3 API:
-/// GET /api/v3/movie?tmdbId= ; GET /api/v3/movie (IMDb fallback) ;
-/// PUT /api/v3/movie/editor {movieIds, monitored:false} ;
-/// DELETE /api/v3/movie/{id}?deleteFiles=false&amp;addImportExclusion=true ; GET /api/v3/system/status.
-/// </summary>
-public sealed class RadarrService : ArrServiceBase
-{
-    public RadarrService(ArrHttp http, ArrAction action)
-        : base(http, action)
-    {
-    }
-
-    public override string Name => "Radarr";
-
-    public override bool AppliesTo(MediaKind kind) => kind == MediaKind.Movie;
-
-    public override async Task<ArrLookup> LookupAsync(MediaItemSnapshot item, CancellationToken ct)
-    {
-        var tmdb = item.ProviderId("Tmdb");
-        var imdb = item.ProviderId("Imdb");
-        if (tmdb is not null && int.TryParse(tmdb, NumberStyles.Integer, CultureInfo.InvariantCulture, out var tmdbId))
-        {
-            using var doc = await Http.GetAsync("/api/v3/movie?tmdbId=" + tmdbId.ToString(CultureInfo.InvariantCulture), ct).ConfigureAwait(false);
-            var first = doc?.RootElement.ValueKind == JsonValueKind.Array ? doc.RootElement.EnumerateArray().FirstOrDefault() : default;
-            return new ArrLookup(first.ValueKind == JsonValueKind.Object ? ToMatch(first) : null, null);
-        }
-
-        if (imdb is not null)
-        {
-            using var doc = await Http.GetAsync("/api/v3/movie", ct).ConfigureAwait(false);
-            if (doc?.RootElement.ValueKind == JsonValueKind.Array)
-            {
-                foreach (var m in doc.RootElement.EnumerateArray())
-                {
-                    if (string.Equals(Str(m, "imdbId"), imdb, StringComparison.OrdinalIgnoreCase))
-                    {
-                        return new ArrLookup(ToMatch(m), null);
-                    }
-                }
-            }
-
-            return new ArrLookup(null, null);
-        }
-
-        return new ArrLookup(null, "Cannot match in Radarr: the movie has no TMDb or IMDb id in Jellyfin. Refresh its metadata.");
-    }
-
-    protected override Task UnmonitorAsync(int id, CancellationToken ct)
-        => Http.PutJsonAsync("/api/v3/movie/editor", new { movieIds = new[] { id }, monitored = false }, ct);
-
-    protected override Task RemoveAndExcludeAsync(int id, CancellationToken ct)
-        => Http.DeleteAsync("/api/v3/movie/" + id.ToString(CultureInfo.InvariantCulture) + "?deleteFiles=false&addImportExclusion=true", ct);
-}
-
-/// <summary>
-/// Sonarr v3 API (also used by Sonarr v4):
-/// GET /api/v3/series?tvdbId= ; GET /api/v3/series (TMDb/IMDb fallback) ;
-/// PUT /api/v3/series/editor {seriesIds, monitored:false, monitorNewItems:"none"} ;
-/// DELETE /api/v3/series/{id}?deleteFiles=false&amp;addImportListExclusion=true ; GET /api/v3/system/status.
-/// </summary>
-public sealed class SonarrService : ArrServiceBase
-{
-    public SonarrService(ArrHttp http, ArrAction action)
-        : base(http, action)
-    {
-    }
-
-    public override string Name => "Sonarr";
-
-    public override bool AppliesTo(MediaKind kind) => kind == MediaKind.Series;
-
-    public override async Task<ArrLookup> LookupAsync(MediaItemSnapshot item, CancellationToken ct)
-    {
-        var tvdb = item.ProviderId("Tvdb");
-        var tmdb = item.ProviderId("Tmdb");
-        var imdb = item.ProviderId("Imdb");
-        if (tvdb is not null && int.TryParse(tvdb, NumberStyles.Integer, CultureInfo.InvariantCulture, out var tvdbId))
-        {
-            using var doc = await Http.GetAsync("/api/v3/series?tvdbId=" + tvdbId.ToString(CultureInfo.InvariantCulture), ct).ConfigureAwait(false);
-            var first = doc?.RootElement.ValueKind == JsonValueKind.Array ? doc.RootElement.EnumerateArray().FirstOrDefault() : default;
-            return new ArrLookup(first.ValueKind == JsonValueKind.Object ? ToMatch(first) : null, null);
-        }
-
-        if (tmdb is not null || imdb is not null)
-        {
-            using var doc = await Http.GetAsync("/api/v3/series", ct).ConfigureAwait(false);
-            if (doc?.RootElement.ValueKind == JsonValueKind.Array)
-            {
-                foreach (var s in doc.RootElement.EnumerateArray())
-                {
-                    var sTmdb = Int(s, "tmdbId");
-                    if ((tmdb is not null && sTmdb is not null && sTmdb.Value.ToString(CultureInfo.InvariantCulture) == tmdb)
-                        || (imdb is not null && string.Equals(Str(s, "imdbId"), imdb, StringComparison.OrdinalIgnoreCase)))
-                    {
-                        return new ArrLookup(ToMatch(s), null);
-                    }
-                }
-            }
-
-            return new ArrLookup(null, null);
-        }
-
-        return new ArrLookup(null, "Cannot match in Sonarr: the series has no TVDB, TMDb or IMDb id in Jellyfin. Refresh its metadata.");
-    }
-
-    protected override Task UnmonitorAsync(int id, CancellationToken ct)
-        => Http.PutJsonAsync("/api/v3/series/editor", new { seriesIds = new[] { id }, monitored = false, monitorNewItems = "none" }, ct);
-
-    protected override Task RemoveAndExcludeAsync(int id, CancellationToken ct)
-        => Http.DeleteAsync("/api/v3/series/" + id.ToString(CultureInfo.InvariantCulture) + "?deleteFiles=false&addImportListExclusion=true", ct);
-}
-
-/// <summary>
-/// Jellyseerr API v1:
+/// One Jellyseerr instance (API v1):
 /// GET /api/v1/movie/{tmdbId} or /api/v1/tv/{tmdbId} → mediaInfo.id ;
-/// DELETE /api/v1/media/{mediaId} (removes the media record and its requests; needs MANAGE_REQUESTS) ;
-/// GET /api/v1/auth/me for the connection test.
+/// DELETE /api/v1/media/{mediaId} (removes the media record and its requests so the title can be requested again) ;
+/// GET /api/v1/auth/me and /api/v1/status for the connection test.
 /// </summary>
-public sealed class JellyseerrService : IExternalService
+public sealed class JellyseerrClient
 {
     private readonly ArrHttp _http;
 
-    public JellyseerrService(ArrHttp http, SeerrAction action)
+    public JellyseerrClient(ArrHttp http, string name, SeerrAction action)
     {
         _http = http;
+        Name = name;
         Action = action;
     }
 
-    public string Name => "Jellyseerr";
-
-    public bool HasConnection => _http.IsConfigured;
+    public string Name { get; }
 
     public SeerrAction Action { get; }
 
     public string ActionName => Action == SeerrAction.RemoveMediaRecord ? "Remove media/request record" : "Do nothing";
-
-    public bool IsNoOp => Action == SeerrAction.Nothing;
-
-    public bool AppliesTo(MediaKind kind) => true;
 
     public async Task<string> TestAsync(CancellationToken ct)
     {
@@ -315,16 +198,16 @@ public sealed class JellyseerrService : IExternalService
         return ("Jellyseerr " + version).Trim();
     }
 
-    /// <summary>Read-only lookup of the Jellyseerr media record id.</summary>
-    public async Task<(int? MediaId, string? Title, string? CannotMatch)> LookupAsync(MediaItemSnapshot item, CancellationToken ct)
+    /// <summary>Read-only lookup of the media record id.</summary>
+    public async Task<(int? MediaId, string? Title, string? CannotMatch)> LookupAsync(MatchKey key, CancellationToken ct)
     {
-        var tmdb = item.ProviderId("Tmdb");
-        if (tmdb is null || !int.TryParse(tmdb, NumberStyles.Integer, CultureInfo.InvariantCulture, out var tmdbId))
+        string? tmdb = key.ProviderIds.FirstOrDefault(p => string.Equals(p.Key, "Tmdb", StringComparison.OrdinalIgnoreCase)).Value;
+        if (tmdb is null || !int.TryParse(tmdb.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var tmdbId) || tmdbId <= 0)
         {
             return (null, null, "Cannot match in Jellyseerr: no TMDb id in Jellyfin. Refresh the item's metadata.");
         }
 
-        string path = (item.Kind == MediaKind.Movie ? "/api/v1/movie/" : "/api/v1/tv/") + tmdbId.ToString(CultureInfo.InvariantCulture);
+        string path = (key.Kind == MediaKind.Movie ? "/api/v1/movie/" : "/api/v1/tv/") + tmdbId.ToString(CultureInfo.InvariantCulture);
         using var doc = await _http.GetAsync(path, ct).ConfigureAwait(false);
         if (doc is null)
         {
@@ -332,58 +215,31 @@ public sealed class JellyseerrService : IExternalService
         }
 
         var root = doc.RootElement;
-        string? title = root.TryGetProperty("title", out var t) && t.ValueKind == JsonValueKind.String ? t.GetString()
-            : root.TryGetProperty("name", out var n) && n.ValueKind == JsonValueKind.String ? n.GetString() : null;
-        if (root.TryGetProperty("mediaInfo", out var mi) && mi.ValueKind == JsonValueKind.Object
-            && mi.TryGetProperty("id", out var id) && id.ValueKind == JsonValueKind.Number)
+        string? title = ArrClient.Str(root, "title") ?? ArrClient.Str(root, "name");
+        if (root.TryGetProperty("mediaInfo", out var mi) && ArrClient.Int(mi, "id") is int id)
         {
-            return (id.GetInt32(), title, null);
+            return (id, title, null);
         }
 
         return (null, title, null);
     }
 
-    public async Task<ExternalStepResult> PlanAsync(MediaItemSnapshot item, CancellationToken cancellationToken)
+    public async Task<ExternalStepResult> RunAsync(MatchKey key, bool execute, CancellationToken ct)
     {
         var r = new ExternalStepResult { Service = Name, Action = ActionName };
-        var (mediaId, title, cannot) = await LookupAsync(item, cancellationToken).ConfigureAwait(false);
-        r.MatchedTitle = title;
-        if (cannot is not null)
-        {
-            r.Status = IsNoOp ? ExternalStepStatus.Skipped : ExternalStepStatus.Failed;
-            r.Message = cannot;
-        }
-        else if (mediaId is null)
-        {
-            r.Status = ExternalStepStatus.NotFound;
-            r.Message = "No Jellyseerr media/request record.";
-        }
-        else
-        {
-            r.ExternalId = mediaId.Value.ToString(CultureInfo.InvariantCulture);
-            r.Status = IsNoOp ? ExternalStepStatus.Skipped : ExternalStepStatus.WouldDo;
-            r.Message = IsNoOp
-                ? "Has a Jellyseerr record; admin chose \"Do nothing\"."
-                : "Would delete Jellyseerr media record " + r.ExternalId + " so it can be requested again.";
-        }
-
-        return r;
-    }
-
-    public async Task<ExternalStepResult> ExecuteAsync(MediaItemSnapshot item, CancellationToken cancellationToken)
-    {
-        var r = new ExternalStepResult { Service = Name, Action = ActionName };
-        if (IsNoOp)
+        if (Action == SeerrAction.Nothing)
         {
             r.Status = ExternalStepStatus.Skipped;
+            r.Message = "Admin chose \"Do nothing\".";
             return r;
         }
 
-        var (mediaId, title, cannot) = await LookupAsync(item, cancellationToken).ConfigureAwait(false);
+        var (mediaId, title, cannot) = await LookupAsync(key, ct).ConfigureAwait(false);
         r.MatchedTitle = title;
         if (cannot is not null)
         {
-            r.Status = ExternalStepStatus.Failed;
+            // No TMDb id: there is nothing Jellyseerr could match, so there is nothing to clean up there.
+            r.Status = ExternalStepStatus.NotFound;
             r.Message = cannot;
             return r;
         }
@@ -391,14 +247,109 @@ public sealed class JellyseerrService : IExternalService
         if (mediaId is null)
         {
             r.Status = ExternalStepStatus.NotFound;
-            r.Message = "No Jellyseerr record; nothing to do.";
+            r.Message = "No Jellyseerr media/request record; nothing to do.";
             return r;
         }
 
         r.ExternalId = mediaId.Value.ToString(CultureInfo.InvariantCulture);
-        await _http.DeleteAsync("/api/v1/media/" + r.ExternalId, cancellationToken).ConfigureAwait(false);
+        if (!execute)
+        {
+            r.Status = ExternalStepStatus.WouldDo;
+            r.Message = "Would delete Jellyseerr media record " + r.ExternalId + " so it can be requested again.";
+            return r;
+        }
+
+        await _http.DeleteAsync("/api/v1/media/" + r.ExternalId, ct).ConfigureAwait(false);
         r.Status = ExternalStepStatus.Done;
         r.Message = "Deleted Jellyseerr media record " + r.ExternalId + ".";
         return r;
     }
+}
+
+/// <summary><see cref="IRemovalBackend"/> over every configured Radarr, Sonarr and Jellyseerr instance.</summary>
+public sealed class ArrRemovalBackend : IRemovalBackend
+{
+    private readonly IReadOnlyList<ArrClient> _arr;
+    private readonly IReadOnlyList<JellyseerrClient> _seerr;
+
+    public ArrRemovalBackend(IReadOnlyList<ArrClient> arr, IReadOnlyList<JellyseerrClient> seerr, bool readOnly)
+    {
+        _arr = arr;
+        _seerr = seerr;
+        ReadOnly = readOnly;
+    }
+
+    public bool ReadOnly { get; }
+
+    public IReadOnlyList<ArrClient> ArrClients => _arr;
+
+    public IReadOnlyList<JellyseerrClient> SeerrClients => _seerr;
+
+    public bool HasSeerrStep => _seerr.Any(s => s.Action != SeerrAction.Nothing);
+
+    public async Task<ArrLibrary> LoadAsync(CancellationToken cancellationToken)
+    {
+        var entries = new List<ArrEntry>();
+        var configured = new Dictionary<ArrKind, int>();
+        var unreachable = new Dictionary<ArrKind, List<string>>();
+        var errors = new List<string>();
+        foreach (var client in _arr)
+        {
+            configured[client.Kind] = configured.GetValueOrDefault(client.Kind) + 1;
+            try
+            {
+                entries.AddRange(await client.ListAsync(cancellationToken).ConfigureAwait(false));
+            }
+            catch (ArrException ex)
+            {
+                if (!unreachable.TryGetValue(client.Kind, out var list))
+                {
+                    list = new List<string>();
+                    unreachable[client.Kind] = list;
+                }
+
+                list.Add(client.Name);
+                errors.Add(client.Name + ": " + ex.Message);
+            }
+        }
+
+        var lib = new ArrLibrary(entries, configured, unreachable);
+        lib.Errors.AddRange(errors);
+        return lib;
+    }
+
+    public Task<ArrEntry?> RefetchAsync(ArrEntry entry, CancellationToken cancellationToken)
+        => Client(entry).GetAsync(entry.Id, cancellationToken);
+
+    public Task DeleteAsync(ArrEntry entry, CancellationToken cancellationToken)
+    {
+        if (ReadOnly)
+        {
+            throw new ReadOnlyViolationException("Delete blocked: this is a read-only (notify-only or dry-run) operation.");
+        }
+
+        return Client(entry).DeleteAsync(entry.Id, cancellationToken);
+    }
+
+    public async Task<List<ExternalStepResult>> SeerrAsync(MatchKey key, bool execute, CancellationToken cancellationToken)
+    {
+        var results = new List<ExternalStepResult>();
+        foreach (var s in _seerr)
+        {
+            try
+            {
+                results.Add(await s.RunAsync(key, execute && !ReadOnly, cancellationToken).ConfigureAwait(false));
+            }
+            catch (ArrException ex)
+            {
+                results.Add(new ExternalStepResult { Service = s.Name, Action = s.ActionName, Status = ExternalStepStatus.Failed, Message = ex.Message });
+            }
+        }
+
+        return results;
+    }
+
+    private ArrClient Client(ArrEntry entry)
+        => _arr.FirstOrDefault(c => c.Kind == entry.Kind && string.Equals(c.Name, entry.Instance, StringComparison.Ordinal))
+           ?? throw new ArrException($"{entry.Instance} is no longer configured in Media Vote.");
 }

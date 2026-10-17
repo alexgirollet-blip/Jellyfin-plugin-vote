@@ -134,11 +134,13 @@
                     <div class="mv-card">
                         <h3>Outcome</h3>
                         <div class="mv-radio">
-                            <label><input type="radio" name="mvOutcome" value="NotifyOnly" checked> <span><strong>Notify only (default)</strong> — produce a report with names, paths, sizes and matching Radarr/Sonarr/Jellyseerr entries. Nothing is deleted.</span></label>
-                            <label><input type="radio" name="mvOutcome" value="DeleteAutomatically"> <span><strong>Delete automatically</strong> — delete the winners from Jellyfin <em>and their files from disk</em> (a series: every season, episode and the series folder), after the Radarr/Sonarr/Jellyseerr steps.</span></label>
+                            <label><input type="radio" name="mvOutcome" value="NotifyOnly" checked> <span><strong>Notify only (default)</strong> — produce a report with names, sizes and the matching Sonarr/Radarr entries. Nothing is removed anywhere.</span></label>
+                            <label><input type="radio" name="mvOutcome" value="DeleteViaArr"> <span><strong>Delete via Sonarr/Radarr</strong> — when the vote closes, Sonarr (series) or Radarr (movies) deletes each winner <em>with its files</em>. Media Vote itself never touches a media file. Titles Sonarr/Radarr do not manage are listed for you to remove by hand.</span></label>
                         </div>
                         <div class="mv-warn" id="mvDeleteBox" hidden>
-                            <label class="mv-check"><input type="checkbox" id="mvDeleteConfirm"> <span>I understand the winning titles and their files will be permanently deleted when the vote closes.</span></label>
+                            <label class="mv-check"><input type="checkbox" id="mvDeleteConfirm"> <span>I understand Sonarr/Radarr will permanently delete the winning titles and their files when the vote closes.</span></label>
+                            <label class="mv-check"><input type="checkbox" id="mvIncludeUnmanaged"> <span>Also let people vote on titles Sonarr/Radarr do not manage (they would only be listed for removal by hand). Off by default.</span></label>
+                            <p class="mv-muted" id="mvMaxNote"></p>
                         </div>
                     </div>
                     <div class="mv-card">
@@ -373,7 +375,7 @@
             var card = h('div', { className: 'mv-card' });
             box.appendChild(card);
             card.appendChild(h('h3', { text: st.title + ' — ' + s.status }));
-            card.appendChild(h('p', { className: 'mv-muted', text: 'Deadline ' + d.deadlineLocal + ' · ' + s.candidates.length + ' titles · ' + st.votesPerUser + ' votes each · N = ' + st.winnerCount + ' · ' + (st.outcome === 'DeleteAutomatically' ? 'DELETE AUTOMATICALLY' : 'Notify only') + ' · turnout ' + d.voterCount + '/' + d.eligibleCount }));
+            card.appendChild(h('p', { className: 'mv-muted', text: 'Deadline ' + d.deadlineLocal + ' · ' + s.candidates.length + ' titles · ' + st.votesPerUser + ' votes each · N = ' + st.winnerCount + ' · ' + (st.outcome === 'DeleteViaArr' ? 'DELETE VIA SONARR/RADARR' : 'Notify only') + ' · turnout ' + d.voterCount + '/' + d.eligibleCount }));
             if (d.nonVoters && d.nonVoters.length && s.status === 'Open') { card.appendChild(h('p', { className: 'mv-muted', text: 'Not voted yet: ' + d.nonVoters.join(', ') })); }
             var actions = h('div', { className: 'mv-row' });
             card.appendChild(actions);
@@ -387,7 +389,7 @@
                     api('POST', 'Sessions/' + s.id + '/Extend', { deadlineLocal: ext.value }).then(done('Deadline updated.'), fail);
                 }));
                 actions.appendChild(btn('Close now', function () {
-                    confirmBox(area, 'Close the vote now and resolve it' + (st.outcome === 'DeleteAutomatically' ? ' — winners will be DELETED' : '') + '?', 'Close now', function () {
+                    confirmBox(area, 'Close the vote now and resolve it' + (st.outcome === 'DeleteViaArr' ? ' — Sonarr/Radarr will DELETE the winners and their files' : '') + '?', 'Close now', function () {
                         loading(true);
                         api('POST', 'Sessions/' + s.id + '/Close').then(done('Vote closed.'), fail).then(function () { loading(false); });
                     });
@@ -419,7 +421,7 @@
                     });
                     tie.appendChild(btn('Apply tie-break', function () {
                         var chosen = boxes.filter(function (b) { return b.checked; }).map(function (b) { return b.value; });
-                        confirmBox(tie, 'Act on ' + chosen.length + ' title(s)' + (st.outcome === 'DeleteAutomatically' ? ' — they will be DELETED' : '') + '?', 'Apply', function () {
+                        confirmBox(tie, 'Act on ' + chosen.length + ' title(s)' + (st.outcome === 'DeleteViaArr' ? ' — Sonarr/Radarr will DELETE them and their files' : '') + '?', 'Apply', function () {
                             api('POST', 'Sessions/' + s.id + '/BreakTie', { itemIds: chosen }).then(done('Tie broken.'), fail);
                         });
                     }, true));
@@ -432,9 +434,9 @@
                         });
                     }, true)]));
                 }
-                if (st.outcome === 'DeleteAutomatically' && r.items.some(function (i) { return ['SkippedExternalFailure', 'DeleteFailed', 'NotAttempted', 'PreflightFailed'].indexOf(i.status) >= 0; })) {
-                    actions.appendChild(btn('Retry failed items', function () {
-                        confirmBox(area, 'Retry the items that were not completed? They will be deleted if all checks pass.', 'Retry', function () {
+                if (st.outcome === 'DeleteViaArr' && (r.execution === 'Interrupted' || r.items.some(function (i) { return RETRYABLE.indexOf(i.status) >= 0; }))) {
+                    actions.appendChild(btn('Retry titles not removed', function () {
+                        confirmBox(area, 'Retry the titles that were not removed? Each one is looked up in Sonarr/Radarr again first (nothing is ever deleted twice); those that match will be deleted with their files.', 'Retry', function () {
                             api('POST', 'Sessions/' + s.id + '/Retry').then(done('Retry finished.'), fail);
                         });
                     }));
@@ -464,20 +466,45 @@
             }))])])]));
         }
 
+        var RETRYABLE = ['NotMatched', 'ArrUnreachable', 'DeleteRefused', 'VerificationFailed', 'ExternalStepFailed', 'NotAttempted', 'SkippedExternalFailure', 'DeleteFailed', 'PreflightFailed'];
+        var STATUS_TEXT = {
+            Reported: 'Reported (nothing changed)',
+            Removed: 'Removed by Sonarr/Radarr',
+            NotMatched: 'Not removable automatically: remove by hand',
+            ArrUnreachable: 'Sonarr/Radarr unreachable: not removed',
+            DeleteRefused: 'Sonarr/Radarr refused the delete',
+            VerificationFailed: 'Could not confirm removal',
+            ExternalStepFailed: 'Jellyseerr step failed: not removed',
+            Protected: 'Protected: kept',
+            NotAttempted: 'Not attempted',
+            TiedAwaitingAdmin: 'Tied: waiting for you',
+            Deleted: 'Deleted (1.0.x)',
+            SkippedExternalFailure: 'Not deleted (1.0.x external step failed)',
+            PreflightFailed: 'Not deleted (1.0.x Jellyfin permission check)',
+            DeleteFailed: 'Not deleted (1.0.x Jellyfin delete failed)'
+        };
+        var CLEANUP_TEXT = { Done: 'Jellyfin entry removed', Pending: 'Waiting for the files to disappear', FilesStillOnDisk: 'FILES STILL ON DISK', Failed: 'Jellyfin will drop it at the next scan' };
+
         function renderOutcome(container, r, names, isDry) {
             var old = container.querySelector('.mv-outcome' + (isDry ? '-dry' : ''));
             if (old) { old.remove(); }
             var wrap = h('div', { className: 'mv-card mv-outcome' + (isDry ? '-dry' : '') });
-            wrap.appendChild(h('h4', { text: isDry ? 'Dry run — what would happen if the vote closed now (nothing was changed)' : 'Result' + (r.outcome === 'NotifyOnly' ? ' (notify only: nothing was deleted)' : '') }));
-            wrap.appendChild(h('p', { className: 'mv-muted', text: 'Turnout ' + r.voterCount + '/' + r.eligibleVoterCount + ' (' + r.turnoutPercent + '%) · selected ' + bytes(r.totalBytesSelected) + (r.totalBytesFreed ? ' · freed ' + bytes(r.totalBytesFreed) : '') + (r.execution ? ' · ' + r.execution : '') }));
+            wrap.appendChild(h('h4', { text: isDry ? 'Dry run — what would happen if the vote closed now (read-only: nothing was changed)' : 'Result' + (r.outcome === 'NotifyOnly' ? ' (notify only: nothing was removed)' : '') }));
+            wrap.appendChild(h('p', { className: 'mv-muted', text: 'Turnout ' + r.voterCount + '/' + r.eligibleVoterCount + ' (' + r.turnoutPercent + '%) · ' + (isDry ? 'would free ' : 'selected ') + bytes(r.totalBytesSelected) + (r.totalBytesFreed ? ' · freed ' + bytes(r.totalBytesFreed) : '') + (r.execution && !isDry ? ' · ' + r.execution : '') }));
             (r.notes || []).forEach(function (n) { wrap.appendChild(h('p', { className: 'mv-warn', text: n })); });
             if (!r.items.length) { wrap.appendChild(h('p', { text: 'No winners.' })); }
+            var manual = r.items.filter(function (i) { return i.status === 'NotMatched' || (i.status === 'Reported' && !i.arrId); });
+            if (manual.length) {
+                wrap.appendChild(h('div', { className: 'mv-warn' }, [h('strong', { text: 'To remove by hand (Sonarr/Radarr do not manage these): ' }), h('span', { text: manual.map(function (i) { return i.name + ' (' + bytes(i.sizeBytes) + (i.paths && i.paths.length ? ', ' + i.paths.join(' | ') : '') + ')'; }).join('; ') })]));
+            }
             r.items.forEach(function (i) {
                 var item = h('div', { className: 'mv-card' }, [
                     h('strong', { text: i.name + ' (' + i.kind + ') — score ' + i.score }),
-                    h('div', {}, [h('span', { className: 'mv-pill', text: i.status }), ' ' + bytes(i.sizeBytes)]),
+                    h('div', {}, [h('span', { className: 'mv-pill', text: STATUS_TEXT[i.status] || i.status }), i.needsAttention ? ' ' : null, i.needsAttention ? h('span', { className: 'mv-pill', text: 'needs attention' }) : null, ' ' + bytes(i.arrSizeOnDisk || i.sizeBytes)]),
+                    i.arrInstance ? h('p', { className: 'mv-muted', text: i.arrInstance + ' #' + i.arrId + (i.arrTitle ? ' · ' + i.arrTitle : '') }) : null,
                     i.message ? h('p', { text: i.message }) : null,
-                    i.paths && i.paths.length ? h('p', { className: 'mv-muted', text: 'Paths: ' + i.paths.join(' | ') }) : null
+                    i.jellyfinCleanup && i.jellyfinCleanup !== 'None' ? h('p', { className: i.jellyfinCleanup === 'FilesStillOnDisk' ? 'mv-warn' : 'mv-muted', text: 'Jellyfin: ' + (CLEANUP_TEXT[i.jellyfinCleanup] || i.jellyfinCleanup) + (i.cleanupNote ? ' — ' + i.cleanupNote : '') }) : null,
+                    i.paths && i.paths.length ? h('p', { className: 'mv-muted', text: 'Folder (as Jellyfin sees it): ' + i.paths.join(' | ') }) : null
                 ]);
                 (i.externalSteps || []).forEach(function (x) {
                     item.appendChild(h('div', { className: 'mv-muted', text: x.service + ' · ' + x.action + ' · ' + x.status + (x.matchedTitle ? ' · ' + x.matchedTitle : '') + (x.message ? ' — ' + x.message : '') }));
@@ -494,7 +521,13 @@
         function radioValue(name) { var c = page.querySelector('input[name="' + name + '"]:checked'); return c ? c.value : null; }
         Array.prototype.forEach.call(page.querySelectorAll('input[name="mvVoters"]'), function (r) { r.addEventListener('change', function () { $('#mvUserPicker').hidden = radioValue('mvVoters') !== 'some'; }); });
         Array.prototype.forEach.call(page.querySelectorAll('input[name="mvOutcome"]'), function (r) {
-            r.addEventListener('change', function () { var del = radioValue('mvOutcome') === 'DeleteAutomatically'; $('#mvDeleteBox').hidden = !del; if (!del) { $('#mvDeleteConfirm').checked = false; } });
+            r.addEventListener('change', function () {
+                var del = radioValue('mvOutcome') === 'DeleteViaArr';
+                $('#mvDeleteBox').hidden = !del;
+                if (!del) { $('#mvDeleteConfirm').checked = false; $('#mvIncludeUnmanaged').checked = false; }
+                var o = data.overview || {};
+                $('#mvMaxNote').textContent = 'Safety maximum: Sonarr/Radarr remove at most ' + (o.maxRemovalsPerVote || 5) + ' title(s) per vote (Settings). ' + (o.arrInstanceCount ? '' : 'No Sonarr/Radarr instance is configured yet (Settings), so nothing could be removed.');
+            });
         });
         $('#mvScope').addEventListener('change', function () { var v = $('#mvScope').value; $('#mvLibBox').hidden = v !== 'SpecificLibraries'; $('#mvPickBox').hidden = v !== 'HandPicked'; });
         $('#mvKeep').addEventListener('change', function () { $('#mvKeepCountBox').hidden = !$('#mvKeep').checked; });
@@ -503,8 +536,13 @@
             var list = $(listSel);
             list.innerHTML = '';
             (results || []).forEach(function (r) {
-                list.appendChild(h('label', {}, [h('button', { type: 'button', className: 'raised emby-button', 'aria-label': 'Add ' + r.name, onclick: function () { store[r.id] = r; renderPicked(); } }, ['+']), h('span', { text: r.name + (r.year ? ' (' + r.year + ')' : '') + ' · ' + r.kind })]));
+                list.appendChild(h('label', {}, [h('button', { type: 'button', className: 'raised emby-button', 'aria-label': 'Add ' + r.name, onclick: function () { store[r.id] = r; renderPicked(); } }, ['+']), h('span', { text: r.name + (r.year ? ' (' + r.year + ')' : '') + ' · ' + r.kind }), removableBadge(r)]));
             });
+        }
+        function removableBadge(r) {
+            if (r.removable === true) { return h('span', { className: 'mv-pill', title: r.removalNote || '', text: 'removable via Sonarr/Radarr' }); }
+            if (r.removable === false) { return h('span', { className: 'mv-pill', title: r.removalNote || '', text: 'not removable automatically' }); }
+            return null;
         }
         function renderPicked() {
             [['#mvPicked', data.picked], ['#sProtItems', data.protItems]].forEach(function (pair) {
@@ -552,6 +590,7 @@
                     winnerCount: num('#mvWinners'),
                     outcome: radioValue('mvOutcome'),
                     deleteConfirmed: $('#mvDeleteConfirm').checked,
+                    includeUnmanagedTitles: $('#mvIncludeUnmanaged').checked,
                     tiePolicy: $('#mvTie').value,
                     showVoterNames: $('#mvNames').checked,
                     showLiveTallies: $('#mvTallies').checked,
@@ -562,13 +601,27 @@
 
         $('#mvPreviewBtn').addEventListener('click', function () {
             loading(true);
-            api('POST', 'Preview', buildRequest()).then(function (p) {
+            var req = buildRequest();
+            api('POST', 'Preview', req).then(function (p) {
                 var box = $('#mvPreview');
                 box.innerHTML = '';
                 box.appendChild(h('p', { className: 'mv-ok', text: p.count + ' titles (' + p.movies + ' movies, ' + p.series + ' series), ' + bytes(p.totalBytes) + ' in total.' }));
                 box.appendChild(h('p', { text: 'Disk space that would be freed: up to ' + bytes(p.maxFreedBytes) + ' (the ' + num('#mvWinners') + ' largest). The exact figure depends on the winners; use "Dry run" on the vote to see it.' }));
+                if (p.excludedNotRemovable) { box.appendChild(h('p', { className: 'mv-warn', text: p.excludedNotRemovable + ' title(s) Sonarr/Radarr do not manage were left out (they cannot be removed automatically). Tick "Also let people vote on titles Sonarr/Radarr do not manage" to include them.' })); }
+                else if (p.notRemovable) { box.appendChild(h('p', { className: 'mv-muted', text: p.notRemovable + ' of these titles are not removable automatically (badge below).' })); }
+                (p.arrErrors || []).forEach(function (e) { box.appendChild(h('p', { className: 'mv-warn', text: e })); });
+                if (req.settings.outcome === 'DeleteViaArr' && num('#mvWinners') > p.maxRemovals) { box.appendChild(h('p', { className: 'mv-warn', text: 'N is larger than the safety maximum of ' + p.maxRemovals + ' titles per vote (Settings): the vote cannot be created like this.' })); }
+                var onlyRemovable = h('input', { type: 'checkbox' });
+                box.appendChild(h('label', { className: 'mv-check' }, [onlyRemovable, h('span', { text: 'Show only titles removable via Sonarr/Radarr' })]));
                 var tbody = h('tbody');
-                p.items.slice(0, 50).forEach(function (i) { tbody.appendChild(h('tr', {}, [h('td', { text: i.name + (i.year ? ' (' + i.year + ')' : '') }), h('td', { text: i.kind }), h('td', { text: bytes(i.sizeBytes) }), h('td', { text: i.playCount ? i.playCount + ' plays' : 'never played' })])); });
+                function draw() {
+                    tbody.innerHTML = '';
+                    p.items.filter(function (i) { return !onlyRemovable.checked || i.removable === true; }).slice(0, 50).forEach(function (i) {
+                        tbody.appendChild(h('tr', {}, [h('td', { text: i.name + (i.year ? ' (' + i.year + ')' : '') }), h('td', { text: i.kind }), h('td', { text: bytes(i.sizeBytes) }), h('td', { text: i.playCount ? i.playCount + ' plays' : 'never played' }), h('td', {}, [removableBadge(i)])]));
+                    });
+                }
+                onlyRemovable.addEventListener('change', draw);
+                draw();
                 box.appendChild(h('div', { className: 'mv-table-wrap' }, [h('table', { className: 'mv-table' }, [tbody])]));
             }, fail).then(function () { loading(false); });
         });
@@ -576,7 +629,7 @@
         $('#mvNewForm').addEventListener('submit', function (e) {
             e.preventDefault();
             var req = buildRequest();
-            if (req.settings.outcome === 'DeleteAutomatically' && !req.settings.deleteConfirmed) { msg('Tick the confirmation box to use automatic deletion.', true); return; }
+            if (req.settings.outcome === 'DeleteViaArr' && !req.settings.deleteConfirmed) { msg('Tick the confirmation box to use "Delete via Sonarr/Radarr".', true); return; }
             loading(true);
             api('POST', 'Sessions', req).then(function (res) {
                 if (!res || res.ok === false) { msg((res && res.errors) || 'Could not create the vote.', true); return; }
@@ -588,38 +641,56 @@
             }, fail).then(function () { loading(false); });
         });
 
-        // ---------------- settings
-        var services = [
-            { key: 'Radarr', actions: [['Unmonitor', 'Unmonitor (default)'], ['RemoveAndExclude', 'Remove from Radarr + import exclusion (files left for Jellyfin)'], ['Nothing', 'Do nothing']] },
-            { key: 'Sonarr', actions: [['Unmonitor', 'Unmonitor (default)'], ['RemoveAndExclude', 'Remove from Sonarr + import list exclusion (files left for Jellyfin)'], ['Nothing', 'Do nothing']] },
-            { key: 'Jellyseerr', actions: [['Nothing', 'Do nothing (default)'], ['RemoveMediaRecord', 'Remove the media/request record so it can be requested again']] }
-        ];
+        // ---------------- settings: Sonarr / Radarr / Jellyseerr instances
+        var PORTS = { Radarr: '7878', Sonarr: '8989', Jellyseerr: '5055' };
         function renderArr(s) {
             var box = $('#sArr');
             box.innerHTML = '';
-            box.appendChild(h('h3', { text: 'Radarr, Sonarr and Jellyseerr (used only by "Delete automatically")' }));
-            box.appendChild(h('p', { className: 'mv-muted', text: 'Each is optional. Keys are stored only in the plugin configuration, never logged and shown masked. Leave the masked value to keep the saved key. Order per title: Radarr/Sonarr, then Jellyseerr, then the Jellyfin deletion; if a configured step fails, that title is not deleted.' }));
-            services.forEach(function (svc) {
-                var url = h('input', { id: 's' + svc.key + 'Url', placeholder: 'http://192.168.1.10:' + (svc.key === 'Radarr' ? '7878' : svc.key === 'Sonarr' ? '8989' : '5055'), value: s[svc.key.toLowerCase() + 'Url'] || '', autocomplete: 'off', inputmode: 'url' });
-                var key = h('input', { id: 's' + svc.key + 'Key', type: 'password', autocomplete: 'off', value: s[svc.key.toLowerCase() + 'ApiKey'] || '', placeholder: 'API key' });
-                var act = h('select', { id: 's' + svc.key + 'Action' });
-                svc.actions.forEach(function (a) { act.appendChild(h('option', { value: a[0], text: a[1] })); });
-                act.value = s[svc.key.toLowerCase() + 'Action'];
+            data.arrRows = [];
+            box.appendChild(h('h3', { text: 'Sonarr, Radarr and Jellyseerr' }));
+            box.appendChild(h('p', { className: 'mv-muted', text: 'Media Vote never deletes media files itself. With "Delete via Sonarr/Radarr", the Sonarr (series) or Radarr (movies) instance that manages a winning title deletes it with its files. Add as many instances as you have (for example a separate Anime Sonarr); each is tried in turn. Keys are stored only in the plugin configuration, never logged and shown masked: leave the masked value to keep the saved key.' }));
+            var list = h('div');
+            box.appendChild(list);
+            function addRow(inst) {
+                var row = { id: inst.id || null };
+                var name = h('input', { value: inst.name || inst.kind, autocomplete: 'off', 'aria-label': 'Name' });
+                var url = h('input', { value: inst.url || '', placeholder: 'http://192.168.1.10:' + PORTS[inst.kind], autocomplete: 'off', inputmode: 'url', 'aria-label': 'Base URL' });
+                var key = h('input', { type: 'password', value: inst.apiKey || '', autocomplete: 'off', placeholder: 'API key', 'aria-label': 'API key' });
+                var on = h('input', { type: 'checkbox', checked: inst.enabled !== false });
                 var result = h('span', { className: 'mv-muted', role: 'status' });
-                var group = h('div', { className: 'mv-card' }, [
-                    h('h4', { text: svc.key }),
+                var card = h('div', { className: 'mv-card' }, [
+                    h('h4', { text: inst.kind }),
                     h('div', { className: 'mv-grid2' }, [
-                        h('div', { className: 'mv-field' }, [h('label', { for: url.id, text: 'Base URL' }), url]),
-                        h('div', { className: 'mv-field' }, [h('label', { for: key.id, text: 'API key' }), key])
+                        h('div', { className: 'mv-field' }, [h('label', { text: 'Name' }), name]),
+                        h('div', { className: 'mv-field' }, [h('label', { text: 'Base URL (include any URL base, e.g. /sonarr)' }), url]),
+                        h('div', { className: 'mv-field' }, [h('label', { text: 'API key' }), key])
                     ]),
-                    h('div', { className: 'mv-field' }, [h('label', { for: act.id, text: 'When a winning title is deleted' }), act]),
-                    h('div', { className: 'mv-row' }, [btn('Test connection', function () {
-                        result.textContent = 'Testing…';
-                        api('POST', 'Test/' + svc.key, { url: url.value, apiKey: key.value }).then(function (r) { result.textContent = r.message; }, function (e) { result.textContent = e.message; });
-                    }), result])
+                    h('label', { className: 'mv-check' }, [on, h('span', { text: 'Use this instance' })]),
+                    h('div', { className: 'mv-row' }, [
+                        btn('Test connection', function () {
+                            result.textContent = 'Testing…';
+                            api('POST', 'Test/' + inst.kind, { id: row.id, kind: inst.kind, url: url.value, apiKey: key.value }).then(function (r) { result.textContent = r.message; }, function (e) { result.textContent = e.message; });
+                        }),
+                        btn('Remove', function () { card.remove(); data.arrRows = data.arrRows.filter(function (x) { return x !== row; }); }),
+                        result
+                    ])
                 ]);
-                box.appendChild(group);
-            });
+                row.read = function () { return { id: row.id, kind: inst.kind, name: name.value.trim(), url: url.value.trim(), apiKey: key.value, enabled: on.checked }; };
+                data.arrRows.push(row);
+                list.appendChild(card);
+            }
+            (s.arrInstances || []).forEach(addRow);
+            box.appendChild(h('div', { className: 'mv-row' }, ['Radarr', 'Sonarr', 'Jellyseerr'].map(function (k) { return btn('Add ' + k, function () { addRow({ kind: k, enabled: true }); }); })));
+            var radarrEx = h('input', { type: 'checkbox', id: 'sRadarrEx', checked: s.radarrAddImportExclusion !== false });
+            var sonarrEx = h('input', { type: 'checkbox', id: 'sSonarrEx', checked: s.sonarrAddImportListExclusion !== false });
+            var seerr = h('select', { id: 'sSeerrAction' }, [h('option', { value: 'Nothing', text: 'Do nothing (default)' }), h('option', { value: 'RemoveMediaRecord', text: 'Remove the media/request record first, so it can be requested again' })]);
+            seerr.value = s.jellyseerrAction || 'Nothing';
+            var max = h('input', { type: 'number', id: 'sMaxRemovals', min: '1', max: '100', value: s.maxRemovalsPerVote || 5 });
+            box.appendChild(h('h4', { text: 'When Sonarr/Radarr delete a winner' }));
+            box.appendChild(h('label', { className: 'mv-check' }, [radarrEx, h('span', { text: 'Radarr: add an import exclusion, so lists do not add the movie again (recommended)' })]));
+            box.appendChild(h('label', { className: 'mv-check' }, [sonarrEx, h('span', { text: 'Sonarr: add an import list exclusion, so lists do not add the series again (recommended)' })]));
+            box.appendChild(h('div', { className: 'mv-field' }, [h('label', { for: 'sSeerrAction', text: 'Jellyseerr (runs before the Sonarr/Radarr delete; if it fails the title is kept)' }), seerr]));
+            box.appendChild(h('div', { className: 'mv-field' }, [h('label', { for: 'sMaxRemovals', text: 'Most titles one vote may remove (safety cap, 1–100)' }), max]));
         }
 
         // Each section loads on its own: a failure in one never hides the others.
@@ -753,12 +824,11 @@
                 webhookUrl: $('#sHookUrl').value, webhookKind: $('#sHookKind').value, webhookOnOpened: $('#sHookOpen').checked,
                 webhookOnClosingSoon: $('#sHookSoon').checked, webhookOnResults: $('#sHookResults').checked, publicServerUrl: s.publicServerUrl || ''
             };
-            services.forEach(function (svc) {
-                var k = svc.key.toLowerCase();
-                body[k + 'Url'] = $('#s' + svc.key + 'Url').value;
-                body[k + 'ApiKey'] = $('#s' + svc.key + 'Key').value;
-                body[k + 'Action'] = $('#s' + svc.key + 'Action').value;
-            });
+            body.arrInstances = (data.arrRows || []).map(function (r) { return r.read(); });
+            body.radarrAddImportExclusion = $('#sRadarrEx') ? $('#sRadarrEx').checked : true;
+            body.sonarrAddImportListExclusion = $('#sSonarrEx') ? $('#sSonarrEx').checked : true;
+            body.jellyseerrAction = $('#sSeerrAction') ? $('#sSeerrAction').value : 'Nothing';
+            body.maxRemovalsPerVote = $('#sMaxRemovals') ? (parseInt($('#sMaxRemovals').value, 10) || 5) : 5;
             loading(true);
             api('POST', 'Settings', body).then(function (r) {
                 if (r && r.ok === false) { msg(r.errors, true); return; }
@@ -835,6 +905,29 @@
                 api('POST', 'SelfCheck').then(function (r) { drawChecks(r.selfCheck); }, fail);
             })]));
             box.appendChild(sc);
+
+            // Sonarr / Radarr (read-only)
+            var arrCard = h('div', { className: 'mv-card' }, [h('h3', { text: 'Sonarr, Radarr and Jellyseerr (read-only check)' })]);
+            arrCard.appendChild(h('p', { className: 'mv-muted', text: 'Media Vote removes titles only through Sonarr/Radarr. Jellyfin not being able to write to the media drives is expected and fine (see "Media folders" above).' }));
+            var arrBody = h('div', { text: 'Checking…' });
+            arrCard.appendChild(arrBody);
+            function loadArrStatus() {
+                arrBody.textContent = 'Checking…';
+                api('GET', 'ArrStatus').then(function (r) {
+                    arrBody.innerHTML = '';
+                    if (!r.instances.length) { arrBody.appendChild(h('p', { text: 'No instance configured (Settings). Votes can still run as "Notify only".' })); return; }
+                    var rows = [];
+                    r.instances.forEach(function (i) {
+                        var roots = (i.rootFolders || []).map(function (f) { return f.path + ': ' + (f.freeSpace === null || f.freeSpace === undefined ? 'free space unknown' : bytes(f.freeSpace) + ' free') + (f.totalSpace ? ' of ' + bytes(f.totalSpace) : ''); }).join(' · ');
+                        rows.push([i.name + ' (' + i.kind + ')', i.enabled ? okText(i.ok) : 'off', i.message + (roots ? ' — ' + roots : '')]);
+                    });
+                    arrBody.appendChild(table(['Instance', 'State', 'Details'], rows));
+                }, function (e) { arrBody.textContent = 'Could not check: ' + e.message; });
+            }
+            arrCard.appendChild(h('div', { className: 'mv-row' }, [btn('Check again', loadArrStatus)]));
+            // Only when the Status tab is visible: the Votes tab also redraws this, and should not call Sonarr/Radarr.
+            if (!page.querySelector('[data-panel="status"]').hidden) { loadArrStatus(); } else { arrBody.textContent = 'Open this tab to check.'; }
+            box.appendChild(arrCard);
 
             // Injection
             var inj = o.injection || {};
